@@ -1,6 +1,6 @@
 function normalizarNombre(nombre) {
   if (!nombre) return "";
-  return nombre.replace(/,/g,"")
+  return nombre.replace(/,/g, "")
                .trim()
                .toUpperCase()
                .split(/\s+/)
@@ -9,11 +9,18 @@ function normalizarNombre(nombre) {
 
 function normalizarFecha(valor) {
   if (!valor) return "";
-  try {
-    return Utilities.formatDate(new Date(valor), Session.getScriptTimeZone(), "dd/MM/yyyy");
-  } catch(e) {
-    return valor.toString().trim();
+  if (Object.prototype.toString.call(valor) === "[object Date]") {
+    return Utilities.formatDate(valor, Session.getScriptTimeZone(), "dd/MM/yyyy");
   }
+  var str = valor.toString().trim();
+  if (str.match(/^\d{1,2}\/\d{1,2}\/\d{4}$/)) {
+    return str;
+  }
+  if (str.match(/^\d{1,2}-\d{1,2}-\d{4}$/)) {
+    var partes = str.split("-");
+    return partes[0].padStart(2, "0") + "/" + partes[1].padStart(2, "0") + "/" + partes[2];
+  }
+  return str;
 }
 
 function normalizarHora(valor) {
@@ -54,65 +61,214 @@ function compararMesasRolPorRol() {
   var hojaComp = ss.getSheetByName("COMPARADOR");
   
   hojaComp.clear();
-  hojaComp.appendRow(["CÓDIGO","ASIGNATURA","FECHA","HORA","PRESIDENTE","VOCAL 1","VOCAL 2"]);
+  hojaComp.appendRow(["", "CÓDIGO", "ASIGNATURA", "FECHA", "HORA", "PRESIDENTE", "VOCAL 1", "VOCAL 2"]);
   
-  // DRIVE: desde fila 8, columnas A–G
-  var datosDrive = hojaDrive.getRange(8,1,hojaDrive.getLastRow()-7,7).getValues();
-  // REPORTE: desde fila 2, columnas A–D
-  var datosReporte = hojaReporte.getRange(2,1,hojaReporte.getLastRow()-1,4).getValues();
+  var datosDrive = hojaDrive.getRange(8, 1, hojaDrive.getLastRow() - 7, 7).getValues();
+  var datosReporte = hojaReporte.getRange(2, 1, hojaReporte.getLastRow() - 1, 4).getValues();
   
-  // Normalizar REPORTE
-  var normalizadoReporte = datosReporte.map(function(row){
+  var normalizadoDrive = datosDrive.map(function(row) {
+    return {
+      codigo: row[0] ? row[0].toString().trim() : "",
+      asignatura: row[1] ? row[1].toString().trim() : "",
+      fecha: normalizarFecha(row[2]),
+      hora: normalizarHora(row[3]),
+      presidente: normalizarNombre(row[4]),
+      vocal1: normalizarNombre(row[5]),
+      vocal2: normalizarNombre(row[6]),
+      docentes: [normalizarNombre(row[4]), normalizarNombre(row[5]), normalizarNombre(row[6])].sort()
+    };
+  });
+  
+  var normalizadoReporte = datosReporte.map(function(row) {
     var codigo = normalizarCodigo(row[0]);
     var asignatura = extraerAsignatura(row[0]);
     var fecha = normalizarFecha(row[1]);
     var hora = normalizarHora(row[2]);
     var docentes = row[3] ? row[3].split(",").map(normalizarNombre) : [];
     return {
-      codigo:codigo,
-      asignatura:asignatura,
-      fecha:fecha,
-      hora:hora,
-      presidente:docentes[0]||"",
-      vocal1:docentes[1]||"",
-      vocal2:docentes[2]||""
+      codigo: codigo,
+      asignatura: asignatura,
+      fecha: fecha,
+      hora: hora,
+      presidente: docentes[0] || "",
+      vocal1: docentes[1] || "",
+      vocal2: docentes[2] || "",
+      docentes: docentes.slice().sort()
     };
   });
   
-  // Comparar con DRIVE
-  datosDrive.forEach(function(row){
-    var codigo = row[0] ? row[0].toString().trim() : "";
-    var asignatura = row[1] ? row[1].toString().trim() : ""; // Columna B en Drive
-    var fecha = normalizarFecha(row[2]);
-    var hora = normalizarHora(row[3]);
-    var presidente = normalizarNombre(row[4]);
-    var vocal1 = normalizarNombre(row[5]);
-    var vocal2 = normalizarNombre(row[6]);
+  // Detectar mesas duplicadas en REPORTE
+  var reportePorAsignatura = {};
+  normalizadoReporte.forEach(function(fila) {
+    var key = fila.asignatura + "|" + fila.fecha + "|" + fila.hora + "|" + fila.docentes.join("|");
+    if (!reportePorAsignatura[key]) {
+      reportePorAsignatura[key] = [];
+    }
+    reportePorAsignatura[key].push(fila);
+  });
+  
+  normalizadoDrive.forEach(function(filaDrive) {
+    var matchFound = null;
     
-    var match = normalizadoReporte.find(function(r){
-      return r.codigo === codigo && r.fecha === fecha && r.hora === hora;
-    });
-    
-    var fila = [codigo,asignatura,fecha,hora,presidente,vocal1,vocal2];
-    hojaComp.appendRow(fila);
-    var lastRow = hojaComp.getLastRow();
-    var rango = hojaComp.getRange(lastRow,1,1,7);
-    
-    if(match){
-      var okPres = (match.presidente === presidente);
-      var okVoc1 = (match.vocal1 === vocal1);
-      var okVoc2 = (match.vocal2 === vocal2);
+    for (var i = 0; i < normalizadoReporte.length; i++) {
+      var filaReporte = normalizadoReporte[i];
       
-      if(okPres && okVoc1 && okVoc2){
-        rango.setFontWeight("bold").setFontColor("green").setBackground("#d9ead3");
+      if (filaReporte.codigo === filaDrive.codigo && 
+          filaReporte.fecha === filaDrive.fecha && 
+          filaReporte.hora === filaDrive.hora) {
+        matchFound = filaReporte;
+        break;
+      }
+    }
+    
+    if (matchFound) {
+      var docentesIguales = true;
+      if (filaDrive.docentes.length !== matchFound.docentes.length) {
+        docentesIguales = false;
       } else {
-        rango.setFontWeight("bold").setFontColor("red").setBackground("#f4cccc");
-        hojaComp.appendRow([match.codigo, match.asignatura, match.fecha, match.hora,
-                            match.presidente, match.vocal1, match.vocal2]);
-        hojaComp.getRange(lastRow+1,1,1,7).setFontWeight("bold").setFontColor("red").setBackground("#f4cccc");
+        for (var k = 0; k < filaDrive.docentes.length; k++) {
+          if (filaDrive.docentes[k] !== matchFound.docentes[k]) {
+            docentesIguales = false;
+            break;
+          }
+        }
+      }
+      
+      if (docentesIguales) {
+        // Mesa correcta
+        var key = filaDrive.asignatura + "|" + filaDrive.fecha + "|" + filaDrive.hora + "|" + filaDrive.docentes.join("|");
+        var mesasDelMismoGrupo = reportePorAsignatura[key] || [];
+        var esDuplicada = mesasDelMismoGrupo.length > 1;
+        
+        hojaComp.appendRow([
+          "",
+          filaDrive.codigo,
+          filaDrive.asignatura,
+          filaDrive.fecha,
+          filaDrive.hora,
+          filaDrive.presidente,
+          filaDrive.vocal1,
+          filaDrive.vocal2
+        ]);
+        
+        var lastRow = hojaComp.getLastRow();
+        var rangoIndicador = hojaComp.getRange(lastRow, 1, 1, 1);
+        var rangoFila = hojaComp.getRange(lastRow, 2, 1, 7);
+        
+        if (esDuplicada) {
+          rangoIndicador.setBackground("#ffd966");
+          rangoFila.setFontWeight("bold").setFontColor("#f79646").setBackground("#ffd966");
+        } else {
+          rangoIndicador.setBackground("#d9ead3");
+          rangoFila.setFontWeight("bold").setFontColor("#00b050").setBackground("#d9ead3");
+        }
+      } else {
+        // Hay error en los docentes - mostrar 3 filas
+        
+        // Fila 1: Título con error (código y asignatura)
+        hojaComp.appendRow([
+          "",
+          filaDrive.codigo,
+          filaDrive.asignatura,
+          "",
+          "",
+          "",
+          "",
+          ""
+        ]);
+        var row1 = hojaComp.getLastRow();
+        hojaComp.getRange(row1, 1, 1, 1).setBackground("#f4cccc");
+        hojaComp.getRange(row1, 2, 1, 2)
+          .setFontWeight("bold")
+          .setFontColor("red")
+          .setBackground("#f4cccc");
+        hojaComp.getRange(row1, 4, 1, 5).setBackground("#f4cccc");
+        
+        // Fila 2: Datos del DRIVE (correctos)
+        hojaComp.appendRow([
+          "",
+          filaDrive.codigo,
+          filaDrive.asignatura,
+          filaDrive.fecha,
+          filaDrive.hora,
+          filaDrive.presidente,
+          filaDrive.vocal1,
+          filaDrive.vocal2
+        ]);
+        var row2 = hojaComp.getLastRow();
+        hojaComp.getRange(row2, 1, 1, 8).setBackground("#d9ead3");
+        
+        // Fila 3: Datos del REPORTE (con errores resaltados)
+        hojaComp.appendRow([
+          "",
+          matchFound.codigo,
+          matchFound.asignatura,
+          matchFound.fecha,
+          matchFound.hora,
+          matchFound.presidente,
+          matchFound.vocal1,
+          matchFound.vocal2
+        ]);
+        var row3 = hojaComp.getLastRow();
+        hojaComp.getRange(row3, 1, 1, 1).setBackground("#f4cccc");
+        hojaComp.getRange(row3, 2, 1, 7).setBackground("#f4cccc");
+        
+        // Resaltar solo las celdas con error en negrita rojo
+        if (filaDrive.presidente !== matchFound.presidente) {
+          hojaComp.getRange(row3, 6, 1, 1)
+            .setFontWeight("bold")
+            .setFontColor("red");
+        }
+        if (filaDrive.vocal1 !== matchFound.vocal1) {
+          hojaComp.getRange(row3, 7, 1, 1)
+            .setFontWeight("bold")
+            .setFontColor("red");
+        }
+        if (filaDrive.vocal2 !== matchFound.vocal2) {
+          hojaComp.getRange(row3, 8, 1, 1)
+            .setFontWeight("bold")
+            .setFontColor("red");
+        }
       }
     } else {
-      rango.setFontWeight("bold").setFontColor("red").setBackground("#f4cccc");
+      // No hay coincidencia - error
+      hojaComp.appendRow([
+        "",
+        filaDrive.codigo,
+        filaDrive.asignatura,
+        "",
+        "",
+        "",
+        "",
+        ""
+      ]);
+      var row1 = hojaComp.getLastRow();
+      hojaComp.getRange(row1, 1, 1, 1).setBackground("#f4cccc");
+      hojaComp.getRange(row1, 2, 1, 2)
+        .setFontWeight("bold")
+        .setFontColor("red")
+        .setBackground("#f4cccc");
+      hojaComp.getRange(row1, 4, 1, 5).setBackground("#f4cccc");
+      
+      // Fila 2: Datos del DRIVE
+      hojaComp.appendRow([
+        "",
+        filaDrive.codigo,
+        filaDrive.asignatura,
+        filaDrive.fecha,
+        filaDrive.hora,
+        filaDrive.presidente,
+        filaDrive.vocal1,
+        filaDrive.vocal2
+      ]);
+      var row2 = hojaComp.getLastRow();
+      hojaComp.getRange(row2, 1, 1, 8).setBackground("#d9ead3");
     }
   });
+  
+  hojaComp.getRange(1, 1, 1, 1).setBackground("#ffffff");
+  hojaComp.getRange(1, 2, 1, 7)
+    .setFontWeight("bold")
+    .setFontColor("#000000")
+    .setBackground("#e8e8e8");
 }
