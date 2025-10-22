@@ -280,12 +280,18 @@ Sub AsignarRolesDocentes(oDocBD As Object, sCodigoMateria As String, aDocentesRe
     sCodigoMateria = Replace(sCodigoMateria, "-", "")
     
     ' Buscar la fila de esta materia en la base de datos
-    For nFila = 5 To 229
-        sCodigoBD = Trim(oSheetBD.getCellByPosition(0, nFila).getString())
-        sCodigoBD = Replace(sCodigoBD, " ", "")
-        sCodigoBD = Replace(sCodigoBD, "-", "")
-        
-        If UCase(sCodigoBD) = UCase(sCodigoMateria) Then
+    Dim sCodigoBase As String
+    sCodigoBase = sCodigoMateria
+    
+    ' Si el código no se encuentra, intentar con el código base (sin subcódigo)
+    Dim nIntentos As Integer
+    For nIntentos = 1 To 2
+        For nFila = 5 To 229
+            sCodigoBD = Trim(oSheetBD.getCellByPosition(0, nFila).getString())
+            sCodigoBD = Replace(sCodigoBD, " ", "")
+            sCodigoBD = Replace(sCodigoBD, "-", "")
+            
+            If UCase(sCodigoBD) = UCase(sCodigoBase) Then
             ' Encontramos la materia, leer los docentes de la BD
             Dim sPresidenteBD As String
             Dim sVocal1BD As String
@@ -326,6 +332,25 @@ Sub AsignarRolesDocentes(oDocBD As Object, sCodigoMateria As String, aDocentesRe
             Exit For
         End If
     Next nFila
+    
+    ' Si se encontró, salir del bucle de intentos
+    If bEncontrado Then
+        Exit For
+    End If
+    
+    ' Si no se encontró en el primer intento, preparar el código base para el segundo intento
+    If nIntentos = 1 And Not bEncontrado Then
+        ' Quitar todo después del guión para buscar el código base
+        Dim nPosGuion As Integer
+        nPosGuion = InStr(sCodigoMateria, "-")
+        If nPosGuion > 0 Then
+            sCodigoBase = Left(sCodigoMateria, nPosGuion - 1)
+        Else
+            ' Si no tiene guión, no hacer segundo intento
+            Exit For
+        End If
+    End If
+Next nIntentos
     
     ' Si no se encontró la materia
     If Not bEncontrado Then
