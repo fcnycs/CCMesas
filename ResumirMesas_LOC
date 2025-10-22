@@ -1,0 +1,109 @@
+Sub ResumirMesasExamen()
+    Dim oDoc As Object
+    Dim oSheets As Object
+    Dim oSheetOriginal As Object
+    Dim oSheetResumido As Object
+    Dim nFilaActual As Long
+    Dim nFilaDestino As Long
+    Dim sCellValue As String
+    Dim nLastRow As Long
+    
+    ' Obtener el documento actual
+    oDoc = ThisComponent
+    oSheets = oDoc.Sheets
+    
+    ' Obtener la hoja original (asumimos que es la primera)
+    oSheetOriginal = oSheets.getByIndex(0)
+    
+    ' Crear nueva hoja "RESUMIDO" si no existe
+    If oSheets.hasByName("RESUMIDO") Then
+        oSheets.removeByName("RESUMIDO")
+    End If
+    oSheets.insertNewByName("RESUMIDO", oSheets.getCount())
+    oSheetResumido = oSheets.getByName("RESUMIDO")
+    
+    ' Crear encabezados en la hoja RESUMIDO
+    oSheetResumido.getCellByPosition(0, 0).setString("Materia")
+    oSheetResumido.getCellByPosition(1, 0).setString("Fecha")
+    oSheetResumido.getCellByPosition(2, 0).setString("Hora")
+    oSheetResumido.getCellByPosition(3, 0).setString("Docentes")
+    
+    ' Determinar la última fila con datos
+    nLastRow = oSheetOriginal.getCellRangeByName("A1:A1500").queryEmptyCells().getRangeAddressesAsString()
+    nLastRow = 1500 ' Por seguridad, iteramos hasta la fila 1500
+    
+    ' Inicializar fila de destino
+    nFilaDestino = 1
+    
+    ' Recorrer la hoja original buscando nombres de materias
+    nFilaActual = 5 ' Comenzar desde la fila 6 (índice 5)
+    
+    While nFilaActual < nLastRow
+        sCellValue = Trim(oSheetOriginal.getCellByPosition(0, nFilaActual).getString())
+        
+        ' Verificar si la celda contiene un código de materia (formato: número entre paréntesis)
+        If Len(sCellValue) > 0 And Left(sCellValue, 1) = "(" Then
+            ' Leer el subtítulo (una fila después del nombre de la materia)
+            Dim sSubtitulo As String
+            sSubtitulo = Trim(oSheetOriginal.getCellByPosition(0, nFilaActual + 1).getString())
+            
+            ' Filtrar: excluir si contiene "Libre" o "El Maiten"
+            Dim bIncluirMesa As Boolean
+            bIncluirMesa = True
+            
+            If InStr(1, sSubtitulo, "Libre", 1) > 0 Then
+                bIncluirMesa = False
+            End If
+            
+            If InStr(1, sSubtitulo, "El Maiten", 1) > 0 Then
+                bIncluirMesa = False
+            End If
+            
+            ' Solo procesar si la mesa pasa los filtros
+            If bIncluirMesa Then
+                ' Copiar nombre de la materia
+                oSheetResumido.getCellByPosition(0, nFilaDestino).setString(sCellValue)
+                
+                ' Buscar la fila con los datos (3 filas más abajo)
+                Dim nFilaDatos As Long
+                nFilaDatos = nFilaActual + 3
+            
+            ' Verificar que la fila de datos existe y contiene información
+            If nFilaDatos < nLastRow Then
+                ' Copiar Fecha (columna B)
+                Dim sFecha As String
+                sFecha = Trim(oSheetOriginal.getCellByPosition(1, nFilaDatos).getString())
+                oSheetResumido.getCellByPosition(1, nFilaDestino).setString(sFecha)
+                
+                ' Copiar Hora (columna C)
+                Dim sHora As String
+                sHora = Trim(oSheetOriginal.getCellByPosition(2, nFilaDatos).getString())
+                oSheetResumido.getCellByPosition(2, nFilaDestino).setString(sHora)
+                
+                ' Copiar Docentes (columna D)
+                Dim sDocentes As String
+                sDocentes = Trim(oSheetOriginal.getCellByPosition(3, nFilaDatos).getString())
+                oSheetResumido.getCellByPosition(3, nFilaDestino).setString(sDocentes)
+            End If
+            
+            ' Incrementar fila de destino
+            nFilaDestino = nFilaDestino + 1
+            End If ' Fin del filtro bIncluirMesa
+        End If
+        
+        ' Avanzar a la siguiente fila
+        nFilaActual = nFilaActual + 1
+    Wend
+    
+    ' Ajustar ancho de columnas automáticamente
+    Dim i As Integer
+    For i = 0 To 3
+        oSheetResumido.getColumns().getByIndex(i).OptimalWidth = True
+    Next i
+    
+    ' Activar la hoja RESUMIDO
+    oDoc.getCurrentController().setActiveSheet(oSheetResumido)
+    
+    MsgBox "Proceso completado. Se procesaron " & (nFilaDestino - 1) & " materias.", 0, "Resumen de Mesas"
+    
+End Sub
