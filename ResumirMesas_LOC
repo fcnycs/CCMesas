@@ -275,82 +275,82 @@ Sub AsignarRolesDocentes(oDocBD As Object, sCodigoMateria As String, aDocentesRe
     
     oSheetBD = oDocBD.Sheets.getByIndex(0)
     
-    ' Limpiar código de materia
-    sCodigoMateria = Replace(Trim(sCodigoMateria), " ", "")
-    sCodigoMateria = Replace(sCodigoMateria, "-", "")
+    ' Limpiar código de materia (solo espacios, NO guiones todavía)
+    sCodigoMateria = Trim(sCodigoMateria)
     
     ' Buscar la fila de esta materia en la base de datos
-    Dim sCodigoBase As String
-    sCodigoBase = sCodigoMateria
-    
-    ' Si el código no se encuentra, intentar con el código base (sin subcódigo)
+    Dim sCodigoBuscar As String
     Dim nIntentos As Integer
+    
     For nIntentos = 1 To 2
+        ' Primer intento: buscar el código completo (con sub-código si existe)
+        ' Segundo intento: buscar solo el código base (sin sub-código)
+        If nIntentos = 1 Then
+            sCodigoBuscar = sCodigoMateria
+        Else
+            ' Extraer código base (parte antes del guión)
+            Dim nPosGuion As Integer
+            nPosGuion = InStr(sCodigoMateria, "-")
+            If nPosGuion > 0 Then
+                sCodigoBuscar = Left(sCodigoMateria, nPosGuion - 1)
+            Else
+                ' No tiene guión, no hay segundo intento posible
+                Exit For
+            End If
+        End If
+        
+        ' Buscar en la base de datos
         For nFila = 5 To 229
             sCodigoBD = Trim(oSheetBD.getCellByPosition(0, nFila).getString())
-            sCodigoBD = Replace(sCodigoBD, " ", "")
-            sCodigoBD = Replace(sCodigoBD, "-", "")
             
-            If UCase(sCodigoBD) = UCase(sCodigoBase) Then
-            ' Encontramos la materia, leer los docentes de la BD
-            Dim sPresidenteBD As String
-            Dim sVocal1BD As String
-            Dim sVocal2BD As String
-            
-            sPresidenteBD = Trim(oSheetBD.getCellByPosition(4, nFila).getString()) ' Columna E
-            sVocal1BD = Trim(oSheetBD.getCellByPosition(5, nFila).getString())     ' Columna F
-            sVocal2BD = Trim(oSheetBD.getCellByPosition(6, nFila).getString())     ' Columna G
-            
-            ' Normalizar nombres de la BD
-            Dim sPresidenteNorm As String
-            Dim sVocal1Norm As String
-            Dim sVocal2Norm As String
-            
-            sPresidenteNorm = NormalizarNombre(sPresidenteBD)
-            sVocal1Norm = NormalizarNombre(sVocal1BD)
-            sVocal2Norm = NormalizarNombre(sVocal2BD)
-            
-            ' Ahora comparar cada docente del reporte con los de la BD
-            Dim i As Integer
-            For i = LBound(aDocentesReporte) To UBound(aDocentesReporte)
-                Dim sDocenteReporteNorm As String
-                sDocenteReporteNorm = NormalizarNombre(aDocentesReporte(i))
+            ' Comparar códigos (sin distinguir mayúsculas)
+            If UCase(sCodigoBD) = UCase(sCodigoBuscar) Then
+                ' Encontramos la materia, leer los docentes de la BD
+                Dim sPresidenteBD As String
+                Dim sVocal1BD As String
+                Dim sVocal2BD As String
                 
-                ' Comparar con presidente
-                If sDocenteReporteNorm = sPresidenteNorm Then
-                    sPresidente = aDocentesReporte(i) ' Usar el nombre original del reporte
-                ' Comparar con vocal 1
-                ElseIf sDocenteReporteNorm = sVocal1Norm Then
-                    sVocal1 = aDocentesReporte(i)
-                ' Comparar con vocal 2
-                ElseIf sDocenteReporteNorm = sVocal2Norm Then
-                    sVocal2 = aDocentesReporte(i)
-                End If
-            Next i
-            
-            bEncontrado = True
+                sPresidenteBD = Trim(oSheetBD.getCellByPosition(4, nFila).getString()) ' Columna E
+                sVocal1BD = Trim(oSheetBD.getCellByPosition(5, nFila).getString())     ' Columna F
+                sVocal2BD = Trim(oSheetBD.getCellByPosition(6, nFila).getString())     ' Columna G
+                
+                ' Normalizar nombres de la BD
+                Dim sPresidenteNorm As String
+                Dim sVocal1Norm As String
+                Dim sVocal2Norm As String
+                
+                sPresidenteNorm = NormalizarNombre(sPresidenteBD)
+                sVocal1Norm = NormalizarNombre(sVocal1BD)
+                sVocal2Norm = NormalizarNombre(sVocal2BD)
+                
+                ' Ahora comparar cada docente del reporte con los de la BD
+                Dim i As Integer
+                For i = LBound(aDocentesReporte) To UBound(aDocentesReporte)
+                    Dim sDocenteReporteNorm As String
+                    sDocenteReporteNorm = NormalizarNombre(aDocentesReporte(i))
+                    
+                    ' Comparar con presidente
+                    If sDocenteReporteNorm = sPresidenteNorm Then
+                        sPresidente = aDocentesReporte(i) ' Usar el nombre original del reporte
+                    ' Comparar con vocal 1
+                    ElseIf sDocenteReporteNorm = sVocal1Norm Then
+                        sVocal1 = aDocentesReporte(i)
+                    ' Comparar con vocal 2
+                    ElseIf sDocenteReporteNorm = sVocal2Norm Then
+                        sVocal2 = aDocentesReporte(i)
+                    End If
+                Next i
+                
+                bEncontrado = True
+                Exit For
+            End If
+        Next nFila
+        
+        ' Si se encontró, salir del bucle de intentos
+        If bEncontrado Then
             Exit For
         End If
-    Next nFila
-    
-    ' Si se encontró, salir del bucle de intentos
-    If bEncontrado Then
-        Exit For
-    End If
-    
-    ' Si no se encontró en el primer intento, preparar el código base para el segundo intento
-    If nIntentos = 1 And Not bEncontrado Then
-        ' Quitar todo después del guión para buscar el código base
-        Dim nPosGuion As Integer
-        nPosGuion = InStr(sCodigoMateria, "-")
-        If nPosGuion > 0 Then
-            sCodigoBase = Left(sCodigoMateria, nPosGuion - 1)
-        Else
-            ' Si no tiene guión, no hacer segundo intento
-            Exit For
-        End If
-    End If
-Next nIntentos
+    Next nIntentos
     
     ' Si no se encontró la materia
     If Not bEncontrado Then
