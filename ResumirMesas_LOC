@@ -36,7 +36,7 @@ Sub ResumirMesasExamen()
     oSheets.insertNewByName("RESUMIDO", oSheets.getCount())
     oSheetResumido = oSheets.getByName("RESUMIDO")
     
-    ' Crear encabezados en la hoja RESUMIDO (ahora con 3 columnas para docentes)
+    ' Crear encabezados en la hoja RESUMIDO
     oSheetResumido.getCellByPosition(0, 0).setString("Materia")
     oSheetResumido.getCellByPosition(1, 0).setString("Fecha")
     oSheetResumido.getCellByPosition(2, 0).setString("Hora")
@@ -45,7 +45,7 @@ Sub ResumirMesasExamen()
     oSheetResumido.getCellByPosition(5, 0).setString("Vocal 2")
     
     ' Determinar la última fila con datos
-    nLastRow = 1500 ' Por seguridad, iteramos hasta la fila 1500
+    nLastRow = 1500
     
     ' Inicializar fila de destino
     nFilaDestino = 1
@@ -56,13 +56,13 @@ Sub ResumirMesasExamen()
     While nFilaActual < nLastRow
         sCellValue = Trim(oSheetOriginal.getCellByPosition(0, nFilaActual).getString())
         
-        ' Verificar si la celda contiene un código de materia (formato: número entre paréntesis)
+        ' Verificar si la celda contiene un código de materia
         If Len(sCellValue) > 0 And Left(sCellValue, 1) = "(" Then
-            ' Leer el subtítulo (una fila después del nombre de la materia)
+            ' Leer el subtítulo
             Dim sSubtitulo As String
             sSubtitulo = Trim(oSheetOriginal.getCellByPosition(0, nFilaActual + 1).getString())
             
-            ' Filtrar: excluir si contiene "Libre" o "El Maiten"
+            ' Filtrar
             Dim bIncluirMesa As Boolean
             bIncluirMesa = True
             
@@ -79,39 +79,56 @@ Sub ResumirMesasExamen()
                 ' Copiar nombre de la materia
                 oSheetResumido.getCellByPosition(0, nFilaDestino).setString(sCellValue)
                 
+                ' Extraer el código numérico de la materia
+                Dim sCodigoMateria As String
+                sCodigoMateria = ExtraerCodigoMateria(sCellValue)
+                
                 ' Buscar la fila con los datos (3 filas más abajo)
                 Dim nFilaDatos As Long
                 nFilaDatos = nFilaActual + 3
             
-                ' Verificar que la fila de datos existe y contiene información
+                ' Verificar que la fila de datos existe
                 If nFilaDatos < nLastRow Then
-                    ' Copiar Fecha (columna B)
+                    ' Copiar Fecha
                     Dim sFecha As String
                     sFecha = Trim(oSheetOriginal.getCellByPosition(1, nFilaDatos).getString())
                     oSheetResumido.getCellByPosition(1, nFilaDestino).setString(sFecha)
                     
-                    ' Copiar Hora (columna C)
+                    ' Copiar Hora
                     Dim sHora As String
                     sHora = Trim(oSheetOriginal.getCellByPosition(2, nFilaDatos).getString())
                     oSheetResumido.getCellByPosition(2, nFilaDestino).setString(sHora)
                     
-                    ' Buscar los docentes en la base de datos externa
+                    ' Leer Docentes del reporte (columna D)
+                    Dim sDocentesReporte As String
+                    sDocentesReporte = Trim(oSheetOriginal.getCellByPosition(3, nFilaDatos).getString())
+                    
+                    ' Dividir docentes por coma
+                    Dim aDocentesReporte() As String
+                    aDocentesReporte = Split(sDocentesReporte, ",")
+                    
+                    ' Limpiar espacios de cada docente
+                    Dim i As Integer
+                    For i = LBound(aDocentesReporte) To UBound(aDocentesReporte)
+                        aDocentesReporte(i) = Trim(aDocentesReporte(i))
+                    Next i
+                    
+                    ' Buscar la fila de esta materia en la base de datos y asignar roles
                     Dim sPresidente As String
                     Dim sVocal1 As String
                     Dim sVocal2 As String
                     
-                    ' Buscar la materia en la base de datos
-                    BuscarDocentesEnBaseDatos(oDocBaseDatos, sCellValue, sPresidente, sVocal1, sVocal2)
+                    AsignarRolesDocentes(oDocBaseDatos, sCodigoMateria, aDocentesReporte, sPresidente, sVocal1, sVocal2)
                     
                     ' Escribir los docentes en las columnas correspondientes
-                    oSheetResumido.getCellByPosition(3, nFilaDestino).setString(sPresidente) ' Presidente
-                    oSheetResumido.getCellByPosition(4, nFilaDestino).setString(sVocal1)      ' Vocal 1
-                    oSheetResumido.getCellByPosition(5, nFilaDestino).setString(sVocal2)      ' Vocal 2
+                    oSheetResumido.getCellByPosition(3, nFilaDestino).setString(sPresidente)
+                    oSheetResumido.getCellByPosition(4, nFilaDestino).setString(sVocal1)
+                    oSheetResumido.getCellByPosition(5, nFilaDestino).setString(sVocal2)
                 End If
                 
                 ' Incrementar fila de destino
                 nFilaDestino = nFilaDestino + 1
-            End If ' Fin del filtro bIncluirMesa
+            End If
         End If
         
         ' Avanzar a la siguiente fila
@@ -121,7 +138,7 @@ Sub ResumirMesasExamen()
     ' Cerrar el documento de base de datos
     oDocBaseDatos.close(True)
     
-    ' Ajustar ancho de columnas automáticamente (ahora son 6 columnas)
+    ' Ajustar ancho de columnas
     Dim i As Integer
     For i = 0 To 5
         oSheetResumido.getColumns().getByIndex(i).OptimalWidth = True
@@ -134,22 +151,41 @@ Sub ResumirMesasExamen()
     
 End Sub
 
+' Función para extraer el código numérico de la materia
+Function ExtraerCodigoMateria(sTextoCompleto As String) As String
+    Dim sResultado As String
+    
+    sTextoCompleto = Trim(sTextoCompleto)
+    
+    If Left(sTextoCompleto, 1) = "(" Then
+        Dim nPosParentesis As Integer
+        nPosParentesis = InStr(sTextoCompleto, ")")
+        
+        If nPosParentesis > 0 Then
+            sResultado = Mid(sTextoCompleto, 2, nPosParentesis - 2)
+        Else
+            sResultado = Mid(sTextoCompleto, 2)
+        End If
+    Else
+        sResultado = sTextoCompleto
+    End If
+    
+    ExtraerCodigoMateria = Trim(sResultado)
+End Function
+
 ' Función para abrir la base de datos
 Function AbrirBaseDatos(sRutaArchivo As String) As Object
     Dim oDocBaseDatos As Object
     Dim oFileAccess As Object
     Dim bArchivoExiste As Boolean
     
-    ' Crear objeto para verificar si el archivo existe
     oFileAccess = CreateUnoService("com.sun.star.ucb.SimpleFileAccess")
     
-    ' Verificar si el archivo existe
     On Error Resume Next
     bArchivoExiste = oFileAccess.exists(ConvertToURL(sRutaArchivo))
     On Error Goto 0
     
     If bArchivoExiste Then
-        ' El archivo existe, intentar abrirlo
         On Error Resume Next
         oDocBaseDatos = StarDesktop.loadComponentFromURL(ConvertToURL(sRutaArchivo), "_blank", 0, Array())
         On Error Goto 0
@@ -160,33 +196,25 @@ Function AbrirBaseDatos(sRutaArchivo As String) As Object
         End If
     End If
     
-    ' Si llegamos aquí, el archivo no existe o no se pudo abrir
-    ' Mostrar diálogo para seleccionar el archivo manualmente
-    MsgBox "No se encontró el archivo de base de datos en la ruta predeterminada." & Chr(10) & _
+    MsgBox "No se encontró el archivo de base de datos en:" & Chr(10) & _
            sRutaArchivo & Chr(10) & Chr(10) & _
-           "Por favor, seleccione el archivo manualmente.", 48, "Archivo no encontrado"
+           "Seleccione el archivo manualmente.", 48, "Archivo no encontrado"
     
     Dim oFilePicker As Object
     Dim sArchivoSeleccionado As String
     
-    ' Crear el selector de archivos
     oFilePicker = CreateUnoService("com.sun.star.ui.dialogs.FilePicker")
-    
-    ' Configurar el filtro para archivos .ods
     oFilePicker.appendFilter("Archivos de LibreOffice Calc (*.ods)", "*.ods")
     oFilePicker.appendFilter("Todos los archivos (*.*)", "*.*")
     oFilePicker.setCurrentFilter("Archivos de LibreOffice Calc (*.ods)")
     
-    ' Establecer el directorio inicial (si es posible)
     On Error Resume Next
     oFilePicker.setDisplayDirectory(ConvertToURL("/home/cristian/Documentos/"))
     On Error Goto 0
     
-    ' Mostrar el diálogo
     If oFilePicker.execute() = 1 Then
         sArchivoSeleccionado = oFilePicker.getFiles()(0)
         
-        ' Intentar abrir el archivo seleccionado
         On Error Resume Next
         oDocBaseDatos = StarDesktop.loadComponentFromURL(sArchivoSeleccionado, "_blank", 0, Array())
         On Error Goto 0
@@ -197,65 +225,112 @@ Function AbrirBaseDatos(sRutaArchivo As String) As Object
         End If
     End If
     
-    ' Si llegamos aquí, no se pudo abrir ningún archivo
     AbrirBaseDatos = Null
-    
 End Function
 
 ' Función para convertir ruta a URL
 Function ConvertToURL(sRuta As String) As String
     Dim oPathSettings As Object
     
-    ' Si ya es una URL, devolverla tal cual
     If Left(sRuta, 7) = "file://" Then
         ConvertToURL = sRuta
         Exit Function
     End If
     
-    ' Convertir ruta del sistema a URL
     oPathSettings = CreateUnoService("com.sun.star.util.PathSubstitution")
     ConvertToURL = oPathSettings.substituteVariables("file://" & sRuta, True)
-    
 End Function
 
-' Función para buscar los docentes en la base de datos
-Sub BuscarDocentesEnBaseDatos(oDocBD As Object, sCodigoMateria As String, _
-                                sPresidente As String, sVocal1 As String, sVocal2 As String)
+' Función para normalizar nombres de docentes (quitar espacios extra, comas, mayúsculas)
+Function NormalizarNombre(sNombre As String) As String
+    Dim sResultado As String
+    
+    ' Convertir a mayúsculas
+    sResultado = UCase(Trim(sNombre))
+    
+    ' Quitar comas
+    sResultado = Replace(sResultado, ",", "")
+    
+    ' Quitar espacios múltiples
+    Do While InStr(sResultado, "  ") > 0
+        sResultado = Replace(sResultado, "  ", " ")
+    Loop
+    
+    NormalizarNombre = Trim(sResultado)
+End Function
+
+' Función para asignar roles a los docentes según la base de datos
+Sub AsignarRolesDocentes(oDocBD As Object, sCodigoMateria As String, aDocentesReporte() As Variant, _
+                         sPresidente As String, sVocal1 As String, sVocal2 As String)
     Dim oSheetBD As Object
     Dim nFila As Long
     Dim sCodigoBD As String
     Dim bEncontrado As Boolean
     
-    ' Inicializar variables de salida
+    ' Inicializar
     sPresidente = ""
     sVocal1 = ""
     sVocal2 = ""
     bEncontrado = False
     
-    ' Obtener la primera hoja de la base de datos
     oSheetBD = oDocBD.Sheets.getByIndex(0)
     
-    ' Buscar desde la fila 6 (índice 5) hasta la fila 230
+    ' Limpiar código de materia
+    sCodigoMateria = Replace(Trim(sCodigoMateria), " ", "")
+    sCodigoMateria = Replace(sCodigoMateria, "-", "")
+    
+    ' Buscar la fila de esta materia en la base de datos
     For nFila = 5 To 229
-        ' Leer el código de materia de la columna A (índice 0)
         sCodigoBD = Trim(oSheetBD.getCellByPosition(0, nFila).getString())
+        sCodigoBD = Replace(sCodigoBD, " ", "")
+        sCodigoBD = Replace(sCodigoBD, "-", "")
         
-        ' Comparar códigos (sin distinguir mayúsculas/minúsculas)
         If UCase(sCodigoBD) = UCase(sCodigoMateria) Then
-            ' Encontramos la materia, leer los docentes
-            sPresidente = Trim(oSheetBD.getCellByPosition(4, nFila).getString()) ' Columna E
-            sVocal1 = Trim(oSheetBD.getCellByPosition(5, nFila).getString())     ' Columna F
-            sVocal2 = Trim(oSheetBD.getCellByPosition(6, nFila).getString())     ' Columna G
+            ' Encontramos la materia, leer los docentes de la BD
+            Dim sPresidenteBD As String
+            Dim sVocal1BD As String
+            Dim sVocal2BD As String
+            
+            sPresidenteBD = Trim(oSheetBD.getCellByPosition(4, nFila).getString()) ' Columna E
+            sVocal1BD = Trim(oSheetBD.getCellByPosition(5, nFila).getString())     ' Columna F
+            sVocal2BD = Trim(oSheetBD.getCellByPosition(6, nFila).getString())     ' Columna G
+            
+            ' Normalizar nombres de la BD
+            Dim sPresidenteNorm As String
+            Dim sVocal1Norm As String
+            Dim sVocal2Norm As String
+            
+            sPresidenteNorm = NormalizarNombre(sPresidenteBD)
+            sVocal1Norm = NormalizarNombre(sVocal1BD)
+            sVocal2Norm = NormalizarNombre(sVocal2BD)
+            
+            ' Ahora comparar cada docente del reporte con los de la BD
+            Dim i As Integer
+            For i = LBound(aDocentesReporte) To UBound(aDocentesReporte)
+                Dim sDocenteReporteNorm As String
+                sDocenteReporteNorm = NormalizarNombre(aDocentesReporte(i))
+                
+                ' Comparar con presidente
+                If sDocenteReporteNorm = sPresidenteNorm Then
+                    sPresidente = aDocentesReporte(i) ' Usar el nombre original del reporte
+                ' Comparar con vocal 1
+                ElseIf sDocenteReporteNorm = sVocal1Norm Then
+                    sVocal1 = aDocentesReporte(i)
+                ' Comparar con vocal 2
+                ElseIf sDocenteReporteNorm = sVocal2Norm Then
+                    sVocal2 = aDocentesReporte(i)
+                End If
+            Next i
+            
             bEncontrado = True
             Exit For
         End If
     Next nFila
     
-    ' Si no se encontró, marcar como no encontrado
+    ' Si no se encontró la materia
     If Not bEncontrado Then
-        sPresidente = "[NO ENCONTRADO]"
-        sVocal1 = ""
-        sVocal2 = ""
+        sPresidente = "[Materia no encontrada en BD]"
+        If UBound(aDocentesReporte) >= 0 Then sVocal1 = aDocentesReporte(0)
+        If UBound(aDocentesReporte) >= 1 Then sVocal2 = aDocentesReporte(1)
     End If
-    
 End Sub
