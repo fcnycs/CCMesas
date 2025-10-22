@@ -139,10 +139,10 @@ Sub ResumirMesasExamen()
     oDocBaseDatos.close(True)
     
     ' Ajustar ancho de columnas
-    Dim i As Integer
-    For i = 0 To 5
-        oSheetResumido.getColumns().getByIndex(i).OptimalWidth = True
-    Next i
+    Dim j As Integer
+    For j = 0 To 5
+        oSheetResumido.getColumns().getByIndex(j).OptimalWidth = True
+    Next j
     
     ' Activar la hoja RESUMIDO
     oDoc.getCurrentController().setActiveSheet(oSheetResumido)
