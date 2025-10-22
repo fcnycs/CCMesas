@@ -147,7 +147,34 @@ Sub ResumirMesasExamen()
     ' Activar la hoja RESUMIDO
     oDoc.getCurrentController().setActiveSheet(oSheetResumido)
     
-    MsgBox "Proceso completado. Se procesaron " & (nFilaDestino - 1) & " materias.", 0, "Resumen de Mesas"
+    ' Eliminar la hoja "worksheet" si existe
+    If oSheets.hasByName("worksheet") Then
+        oSheets.removeByName("worksheet")
+    End If
+    
+    ' Copiar todos los datos (sin encabezados) al portapapeles
+    ' Rango desde A2 hasta F[última fila con datos]
+    If nFilaDestino > 1 Then
+        Dim oRango As Object
+        Dim nUltimaFila As Long
+        nUltimaFila = nFilaDestino - 1
+        
+        ' Crear el rango desde A2 hasta F[última fila]
+        oRango = oSheetResumido.getCellRangeByPosition(0, 1, 5, nUltimaFila)
+        
+        ' Seleccionar el rango
+        oDoc.getCurrentController().select(oRango)
+        
+        ' Copiar al portapapeles
+        Dim oFrame As Object
+        Dim oDispatcher As Object
+        oFrame = oDoc.getCurrentController().getFrame()
+        oDispatcher = createUnoService("com.sun.star.frame.DispatchHelper")
+        oDispatcher.executeDispatch(oFrame, ".uno:Copy", "", 0, Array())
+    End If
+    
+    MsgBox "Proceso completado. Se procesaron " & (nFilaDestino - 1) & " materias." & Chr(10) & _
+           "Los datos están listos para pegar en otro documento.", 0, "Resumen de Mesas"
     
 End Sub
 
