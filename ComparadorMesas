@@ -86,30 +86,30 @@ function compararMesasRolPorRol() {
   // Leer DRIVE (7 columnas: A-G)
   var datosDrive = hojaDrive.getRange(8,1,hojaDrive.getLastRow()-7,7).getValues();
   
-  // Leer REPORTE (7 columnas: A-G)
-  var datosReporte = hojaReporte.getRange(2,1,hojaReporte.getLastRow()-1,7).getValues();
+  // ---------------------------------------------------------------
+  // Leer REPORTE (nuevo formato: 4 columnas A-D)
+  //   A: código
+  //   B: fecha
+  //   C: hora
+  //   D: docentes (todos separados por coma, sin distinción de roles)
+  // ---------------------------------------------------------------
+  var datosReporte = hojaReporte.getRange(2,1,hojaReporte.getLastRow()-1,4).getValues();
   
   // Indexar reporte por código
   var reportePorCodigo = {};
   for(var r = 0; r < datosReporte.length; r++){
     var codigo = datosReporte[r][0] ? datosReporte[r][0].toString().trim() : "";
-    var asignatura = datosReporte[r][1] ? datosReporte[r][1].toString().trim() : "";
-    var fecha = normalizarFecha(datosReporte[r][2]);
-    var hora = normalizarHora(datosReporte[r][3]);
-    var presidente = datosReporte[r][4] ? datosReporte[r][4].toString().trim() : "";
-    var vocal1 = datosReporte[r][5] ? datosReporte[r][5].toString().trim() : "";
-    var vocal2 = datosReporte[r][6] ? datosReporte[r][6].toString().trim() : "";
+    var fecha = normalizarFecha(datosReporte[r][1]);
+    var hora = normalizarHora(datosReporte[r][2]);
+    var docentes = datosReporte[r][3] ? datosReporte[r][3].toString().trim() : "";
     
     if(!reportePorCodigo[codigo]){
       reportePorCodigo[codigo] = [];
     }
     reportePorCodigo[codigo].push({
-      asignatura: asignatura,
       fecha: fecha,
       hora: hora,
-      presidente: presidente,
-      vocal1: vocal1,
-      vocal2: vocal2
+      docentes: docentes   // string con todos los docentes separados por coma
     });
   }
   
@@ -127,7 +127,7 @@ function compararMesasRolPorRol() {
     var vocal1Norm = normalizarNombreFlexible(vocal1);
     var vocal2Norm = normalizarNombreFlexible(vocal2);
     
-    // Aplicar tabla de equivalencias
+    // Aplicar tabla de equivalencias a los docentes del Drive
     if(tablaDocentesPorDrive[presidenteNorm]){
       presidenteNorm = tablaDocentesPorDrive[presidenteNorm];
     }
@@ -152,81 +152,88 @@ function compararMesasRolPorRol() {
       hojaComp.appendRow(["Drive", codigo, asignatura, fecha, hora, presidente, vocal1, vocal2]);
       hojaComp.getRange(hojaComp.getLastRow(),1,1,8).setBackground("#f4cccc").setFontColor("red");
       
-      hojaComp.appendRow(["Reporte", codigo, asignatura, "NO EXISTE", "", "", "", ""]);
+      hojaComp.appendRow(["Reporte", codigo, "", "NO EXISTE", "", "", "", ""]);
       hojaComp.getRange(hojaComp.getLastRow(),1,1,8).setBackground("#f4cccc").setFontColor("red");
+
     } else {
       var match = mesasReporte[0];
       
-      var presidenteReporteNorm = normalizarNombreFlexible(match.presidente);
-      var vocal1ReporteNorm = normalizarNombreFlexible(match.vocal1);
-      var vocal2ReporteNorm = normalizarNombreFlexible(match.vocal2);
+      // ---------------------------------------------------------------
+      // Normalizar docentes del REPORTE: separar por coma y normalizar cada uno
+      // ---------------------------------------------------------------
+      var docentesReporteNorm = match.docentes
+        .split(",")
+        .map(function(d){ return normalizarNombreFlexible(d.trim()); })
+        .filter(function(d){ return d.length > 0; });
       
-      // Comparar
+      // Armar lista de docentes del DRIVE (solo los que tienen valor)
+      var docentesDrive = [];
+      if(presidente.length > 0) docentesDrive.push(presidenteNorm);
+      if(vocal1.length > 0)     docentesDrive.push(vocal1Norm);
+      if(vocal2.length > 0)     docentesDrive.push(vocal2Norm);
+      
+      // Comparar fecha y hora
       var fechaOk = (fecha === match.fecha);
-      var horaOk = (hora === match.hora);
-      var presidenteOk = sonDocenetesSimilares(presidenteNorm, presidenteReporteNorm);
+      var horaOk  = (hora  === match.hora);
       
-      var vocalesOk = true;
-      if(vocal1.length > 0 || vocal2.length > 0){
-        var vocalesDrive = [];
-        if(vocal1.length > 0) vocalesDrive.push(vocal1Norm);
-        if(vocal2.length > 0) vocalesDrive.push(vocal2Norm);
-        
-        var vocalesReporte = [];
-        if(match.vocal1.length > 0) vocalesReporte.push(vocal1ReporteNorm);
-        if(match.vocal2.length > 0) vocalesReporte.push(vocal2ReporteNorm);
-        
-        if(vocalesDrive.length !== vocalesReporte.length){
-          vocalesOk = false;
-        } else {
-          for(var i = 0; i < vocalesDrive.length; i++){
-            var encontrado = false;
-            for(var j = 0; j < vocalesReporte.length; j++){
-              if(sonDocenetesSimilares(vocalesDrive[i], vocalesReporte[j])){
-                encontrado = true;
-                break;
-              }
-            }
-            if(!encontrado){
-              vocalesOk = false;
+      // ---------------------------------------------------------------
+      // Comparar docentes sin importar roles ni orden:
+      // cada docente del Drive debe encontrar su par en el Reporte
+      // ---------------------------------------------------------------
+      var docOk = true;
+      if(docentesDrive.length !== docentesReporteNorm.length){
+        docOk = false;
+      } else {
+        for(var i = 0; i < docentesDrive.length; i++){
+          var encontrado = false;
+          for(var j = 0; j < docentesReporteNorm.length; j++){
+            if(sonDocenetesSimilares(docentesDrive[i], docentesReporteNorm[j])){
+              encontrado = true;
               break;
             }
+          }
+          if(!encontrado){
+            docOk = false;
+            break;
           }
         }
       }
       
-      if(fechaOk && horaOk && presidenteOk && vocalesOk){
+      if(fechaOk && horaOk && docOk){
+        // TODO OK → verde
         rango.setFontWeight("bold").setFontColor("green").setBackground("#d9ead3");
+
       } else {
-        // TÍTULO con fondo rojo pero texto negro y negrita
+        // HAY DIFERENCIAS → rojo
         rango.setBackground("#f4cccc").setFontColor("black").setFontWeight("bold");
         
+        // Fila Drive: muestra los docentes con sus roles originales
         hojaComp.appendRow(["Drive", codigo, asignatura, fecha, hora, presidente, vocal1, vocal2]);
         var driveRow = hojaComp.getLastRow();
         hojaComp.getRange(driveRow,1,1,8).setBackground("#f4cccc").setFontColor("red");
         
-        hojaComp.appendRow(["Reporte", codigo, asignatura, match.fecha, match.hora, match.presidente, match.vocal1, match.vocal2]);
+        // Fila Reporte: muestra el string completo de docentes en columna F (PRESIDENTE)
+        // Las columnas G y H quedan vacías porque el reporte no separa por rol
+        hojaComp.appendRow(["Reporte", codigo, "", match.fecha, match.hora, match.docentes, "", ""]);
         var reporteRow = hojaComp.getLastRow();
         hojaComp.getRange(reporteRow,1,1,8).setBackground("#f4cccc").setFontColor("red");
         
-        // Solo resaltar en negrita las celdas con diferencias
+        // Resaltar en negrita solo las celdas con diferencias
         if(!fechaOk){
-          hojaComp.getRange(driveRow, 4).setFontWeight("bold");
+          hojaComp.getRange(driveRow,   4).setFontWeight("bold");
           hojaComp.getRange(reporteRow, 4).setFontWeight("bold");
         }
         if(!horaOk){
-          hojaComp.getRange(driveRow, 5).setFontWeight("bold");
+          hojaComp.getRange(driveRow,   5).setFontWeight("bold");
           hojaComp.getRange(reporteRow, 5).setFontWeight("bold");
         }
-        if(!presidenteOk){
+        if(!docOk){
+          // En Drive resaltamos las 3 celdas de docentes (cols 6, 7, 8)
           hojaComp.getRange(driveRow, 6).setFontWeight("bold");
-          hojaComp.getRange(reporteRow, 6).setFontWeight("bold");
-        }
-        if(!vocalesOk){
           hojaComp.getRange(driveRow, 7).setFontWeight("bold");
-          hojaComp.getRange(reporteRow, 7).setFontWeight("bold");
           hojaComp.getRange(driveRow, 8).setFontWeight("bold");
-          hojaComp.getRange(reporteRow, 8).setFontWeight("bold");
+          // En Reporte resaltamos la columna F donde está el string completo
+          hojaComp.getRange(reporteRow, 6).setFontWeight("bold");
         }
       }
     }
