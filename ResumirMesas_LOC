@@ -1,5 +1,5 @@
 '══════════════════════════════════════════════════════════════════════════
-' ResumirMesas_LOC  ·  v3.1
+' ResumirMesas_LOC  ·  v4
 '
 ' Resume el reporte de mesas del SIU y separa el tribunal en
 ' Presidente / Vocal 1 / Vocal 2 tomando los roles de la base de datos
@@ -59,16 +59,27 @@ Dim gSumSim As Double
 '══════════════════════════════════════════════════════════════════════════
 Sub ResumirMesasExamen()
     Dim oDoc As Object, oSheets As Object, oOrig As Object, oRes As Object
-    Dim oBD As Object
+    Dim oBD As Object, oProgreso As Object
     Dim nUlt As Long, nFila As Long, nDest As Long, nDatos As Long
     Dim sA As String, sLinea As String
-    Dim sTitulo As String, sCod As String, sMat As String
+    Dim sCod As String, sMat As String, sTitulo As String
     Dim sFecha As String, sHora As String, sDocentes As String
     Dim aRepO As Variant, aRepN As Variant, aRepTok As Variant
     Dim vRes As Variant
-    Dim j As Integer
+    Dim vRep As Variant
+    Dim aSalida()
+    Dim aColor() As Long
+    Dim j As Integer, k As Long
     Dim nOK As Long, nRev As Long, nSin As Long
     Dim bIncluir As Boolean
+    Dim bBloqueado As Boolean
+
+    On Error Goto ManejoError
+
+    nFila      = 0
+    nDest      = 1
+    sTitulo    = "(ninguna todavia)"
+    bBloqueado = False
 
     oDoc    = ThisComponent
     oSheets = oDoc.Sheets
@@ -83,25 +94,36 @@ Sub ResumirMesasExamen()
     oBD.close(True)
 
     If gN = 0 Then
-        MsgBox "La base de datos se abrió pero no se leyó ninguna mesa." & Chr(10) & _
-               "Verificá que los datos empiecen en la fila " & (BD_FILA_1 + 1) & _
+        MsgBox "La base de datos se abrio pero no se leyo ninguna mesa." & Chr(10) & _
+               "Verifica que los datos empiecen en la fila " & (BD_FILA_1 + 1) & _
                " de la primera hoja.", 16, "Error"
         Exit Sub
     End If
+
+    nUlt = UltimaFila(oOrig)
+
+    ' Lectura en bloque del reporte: una sola llamada en vez de miles.
+    ' Se usa solo para DETECTAR encabezados de materia y filas "Mesa:".
+    ' Los valores (fecha, hora, docentes) se leen con getString mas abajo,
+    ' porque getDataArray devuelve numeros para celdas con formato.
+    vRep = oOrig.getCellRangeByPosition(0, 0, 5, nUlt).getDataArray()
 
     If oSheets.hasByName("RESUMIDO") Then oSheets.removeByName("RESUMIDO")
     oSheets.insertNewByName("RESUMIDO", oSheets.getCount())
     oRes = oSheets.getByName("RESUMIDO")
 
-    oRes.getCellByPosition(0, 0).setString("Materia")
-    oRes.getCellByPosition(1, 0).setString("Fecha")
-    oRes.getCellByPosition(2, 0).setString("Hora")
-    oRes.getCellByPosition(3, 0).setString("Presidente")
-    oRes.getCellByPosition(4, 0).setString("Vocal 1")
-    oRes.getCellByPosition(5, 0).setString("Vocal 2")
-    oRes.getCellByPosition(6, 0).setString("ESTADO")
+    oRes.getCellByPosition(0, 0).setString("Codigo")
+    oRes.getCellByPosition(1, 0).setString("Materia")
+    oRes.getCellByPosition(2, 0).setString("Fecha")
+    oRes.getCellByPosition(3, 0).setString("Hora")
+    oRes.getCellByPosition(4, 0).setString("Presidente")
+    oRes.getCellByPosition(5, 0).setString("Vocal 1")
+    oRes.getCellByPosition(6, 0).setString("Vocal 2")
+    oRes.getCellByPosition(7, 0).setString("ESTADO")
 
-    nUlt    = UltimaFila(oOrig)
+    ReDim aSalida(nUlt)
+    ReDim aColor(nUlt)
+
     nDest   = 1
     nOK     = 0
     nRev    = 0
@@ -110,10 +132,18 @@ Sub ResumirMesasExamen()
     sCod    = ""
     sMat    = ""
 
+    oDoc.lockControllers()
+    bBloqueado = True
+
+    oProgreso = oDoc.getCurrentController().getFrame().createStatusIndicator()
+    oProgreso.start("Resumiendo mesas...", nUlt)
+
     nFila = REP_FILA_1
     While nFila <= nUlt
 
-        sA = Trim(oOrig.getCellByPosition(0, nFila).getString())
+        If (nFila Mod 50) = 0 Then oProgreso.setValue(nFila)
+
+        sA = TextoDe(vRep(nFila)(0))
 
         If Len(sA) > 0 And Left(sA, 1) = "(" Then
             sTitulo = sA
@@ -122,35 +152,31 @@ Sub ResumirMesasExamen()
         End If
 
         sLinea = sA
-        If Len(sLinea) = 0 Then sLinea = LeerFilaTexto(oOrig, nFila, 1, 5)
+        If Len(sLinea) = 0 Then sLinea = TextoFila(vRep(nFila), 1, 5)
 
         If InStr(sLinea, "Mesa:") > 0 And Len(sTitulo) > 0 Then
 
             bIncluir = True
             If InStr(1, sLinea, "Libre", 1) > 0     Then bIncluir = False
             If InStr(1, sLinea, "El Maiten", 1) > 0 Then bIncluir = False
-            If InStr(1, sLinea, "El Maitén", 1) > 0 Then bIncluir = False
+            If InStr(1, sLinea, "El Mait" & Chr(233) & "n", 1) > 0 Then bIncluir = False
 
             If bIncluir Then
                 nDatos = nFila + 2
                 Do While nDatos <= nUlt
-                    sFecha = Trim(oOrig.getCellByPosition(1, nDatos).getString())
-                    If Len(sFecha) = 0 Then Exit Do
-                    If Left(Trim(oOrig.getCellByPosition(0, nDatos).getString()), 1) = "(" Then Exit Do
+                    If Len(TextoDe(vRep(nDatos)(1))) = 0 Then Exit Do
+                    If Left(TextoDe(vRep(nDatos)(0)), 1) = "(" Then Exit Do
 
+                    sFecha    = Trim(oOrig.getCellByPosition(1, nDatos).getString())
                     sHora     = Trim(oOrig.getCellByPosition(2, nDatos).getString())
                     sDocentes = Trim(oOrig.getCellByPosition(3, nDatos).getString())
 
                     aRepO = SepararDocentes(sDocentes)
 
-                    oRes.getCellByPosition(0, nDest).setString(sTitulo)
-                    oRes.getCellByPosition(1, nDest).setString(sFecha)
-                    oRes.getCellByPosition(2, nDest).setString(sHora)
-
                     If UBound(aRepO) < 0 Then
-                        oRes.getCellByPosition(6, nDest).setString( _
+                        aSalida(nDest - 1) = Array(sCod, sMat, sFecha, sHora, "", "", "", _
                             "SIN RESOLVER: la mesa no tiene docentes cargados en el reporte")
-                        oRes.getCellByPosition(6, nDest).CellBackColor = RGB(255, 199, 206)
+                        aColor(nDest - 1) = RGB(255, 199, 206)
                         nSin = nSin + 1
                     Else
                         aRepN   = NormalizarLista(aRepO)
@@ -158,19 +184,18 @@ Sub ResumirMesasExamen()
 
                         vRes = ResolverMesa(sCod, sMat, aRepO, aRepN, aRepTok)
 
-                        oRes.getCellByPosition(3, nDest).setString(vRes(0))
-                        oRes.getCellByPosition(4, nDest).setString(vRes(1))
-                        oRes.getCellByPosition(5, nDest).setString(vRes(2))
-                        oRes.getCellByPosition(6, nDest).setString(vRes(3))
+                        aSalida(nDest - 1) = Array(sCod, sMat, sFecha, sHora, _
+                                                   vRes(0), vRes(1), vRes(2), vRes(3))
 
                         If vRes(3) = "OK" Then
                             nOK = nOK + 1
+                            aColor(nDest - 1) = -1
                         ElseIf Left(vRes(3), 12) = "SIN RESOLVER" Then
                             nSin = nSin + 1
-                            oRes.getCellByPosition(6, nDest).CellBackColor = RGB(255, 199, 206)
+                            aColor(nDest - 1) = RGB(255, 199, 206)
                         Else
                             nRev = nRev + 1
-                            oRes.getCellByPosition(6, nDest).CellBackColor = RGB(255, 235, 156)
+                            aColor(nDest - 1) = RGB(255, 235, 156)
                         End If
                     End If
 
@@ -184,18 +209,38 @@ Sub ResumirMesasExamen()
         nFila = nFila + 1
     Wend
 
+    ' Volcado en bloque: una sola escritura para toda la hoja
+    If nDest > 1 Then
+        ReDim Preserve aSalida(nDest - 2)
+        oRes.getCellRangeByPosition(0, 1, 7, nDest - 1).setDataArray(aSalida)
+
+        For k = 0 To nDest - 2
+            If aColor(k) <> -1 And aColor(k) <> 0 Then
+                oRes.getCellByPosition(7, k + 1).CellBackColor = aColor(k)
+            End If
+        Next k
+    End If
+
+    oProgreso.end()
+    oDoc.unlockControllers()
+    bBloqueado = False
+
+    ' OptimalWidth solo en A:G. La columna H puede tener textos larguisimos
+    ' y el ancho optimo se va de rango.
     For j = 0 To 6
         oRes.getColumns().getByIndex(j).OptimalWidth = True
     Next j
+    oRes.getColumns().getByIndex(7).Width = 12000
 
     oDoc.getCurrentController().setActiveSheet(oRes)
 
     If oSheets.hasByName("worksheet") Then oSheets.removeByName("worksheet")
     If oSheets.hasByName("Worksheet") Then oSheets.removeByName("Worksheet")
+    If oSheets.hasByName("WORKSHEET") Then oSheets.removeByName("WORKSHEET")
 
     If nDest > 1 Then
         Dim oRango As Object, oFrame As Object, oDisp As Object
-        oRango = oRes.getCellRangeByPosition(0, 1, 5, nDest - 1)
+        oRango = oRes.getCellRangeByPosition(0, 1, 6, nDest - 1)
         oDoc.getCurrentController().select(oRango)
         oFrame = oDoc.getCurrentController().getFrame()
         oDisp  = createUnoService("com.sun.star.frame.DispatchHelper")
@@ -204,11 +249,56 @@ Sub ResumirMesasExamen()
 
     MsgBox "Proceso terminado." & Chr(10) & Chr(10) & _
            "Mesas procesadas:                  " & (nDest - 1) & Chr(10) & _
-           "  · Sin observaciones:             " & nOK  & Chr(10) & _
-           "  · Amarillas, revisar diferencia: " & nRev & Chr(10) & _
-           "  · Rojas, sin resolver:           " & nSin & Chr(10) & Chr(10) & _
-           "El rango A2:F ya está en el portapapeles.", 0, "Resumen de Mesas"
+           "  . Sin observaciones:             " & nOK  & Chr(10) & _
+           "  . Amarillas, revisar diferencia: " & nRev & Chr(10) & _
+           "  . Rojas, sin resolver:           " & nSin & Chr(10) & Chr(10) & _
+           "El rango A2:G ya esta en el portapapeles.", 0, "Resumen de Mesas"
+    Exit Sub
+
+
+ManejoError:
+    On Error Resume Next
+    If Not IsNull(oProgreso) Then oProgreso.end()
+    If bBloqueado Then oDoc.unlockControllers()
+    On Error Goto 0
+
+    MsgBox "La macro se detuvo por un error." & Chr(10) & Chr(10) & _
+           "Error " & Err & ": " & Error$ & Chr(10) & _
+           "Linea de Basic: " & Erl & Chr(10) & Chr(10) & _
+           "Fila del reporte: " & (nFila + 1) & Chr(10) & _
+           "Ultima materia leida: " & sTitulo & Chr(10) & _
+           "Mesas escritas hasta ahora: " & (nDest - 1) & Chr(10) & Chr(10) & _
+           "Pasame esta pantalla y lo corrijo.", 16, "Error en ResumirMesasExamen"
 End Sub
+
+
+'======================================================================
+' Helpers para la lectura en bloque del reporte
+'======================================================================
+Function TextoDe(vValor As Variant) As String
+    If IsNull(vValor) Or IsEmpty(vValor) Then
+        TextoDe = ""
+    ElseIf VarType(vValor) = 8 Then
+        TextoDe = Trim(vValor)
+    ElseIf vValor = 0 Then
+        ' getDataArray devuelve 0 en celdas vacias segun la version.
+        ' Solo se usa para detectar, nunca para tomar valores, asi que
+        ' tratarlo como vacio es lo correcto.
+        TextoDe = ""
+    Else
+        TextoDe = Trim(CStr(vValor))
+    End If
+End Function
+
+
+Function TextoFila(vFila As Variant, nCol1 As Integer, nCol2 As Integer) As String
+    Dim j As Integer, s As String
+    s = ""
+    For j = nCol1 To nCol2
+        If j <= UBound(vFila) Then s = s & " " & TextoDe(vFila(j))
+    Next j
+    TextoFila = Trim(s)
+End Function
 
 
 '══════════════════════════════════════════════════════════════════════════
@@ -244,6 +334,25 @@ Function ResolverMesa(sCod As String, sMat As String, aRepO(), aRepN(), aRepTok(
     nReq = 2
     If nRep < 2 Then nReq = nRep
 
+    '--- Atajo -----------------------------------------------------------
+    ' Caso normal: el código coincide exacto y el tribunal cierra.
+    ' Se resuelve sin puntuar las ~225 filas de la BD. Esto es lo que hace
+    ' que la macro termine en segundos en vez de minutos.
+    If Len(sCodN) > 0 Then
+        For nF = 0 To gN - 1
+            If Len(gCod(nF)) > 0 Then
+                If gCod(nF) = sCodN Then
+                    dMejor = PuntajeFila(nF, sCodN, sCodNum, sMatN, aRepN, aRepTok)
+                    If gCoinc >= nReq Then
+                        ResolverMesa = AsignarRoles(aRepO, aRepN, nF)
+                        Exit Function
+                    End If
+                End If
+            End If
+        Next nF
+    End If
+
+    '--- Camino largo: puntuar todas las filas ----------------------------
     ReDim aP(gN - 1)
     ReDim aC(gN - 1)
     ReDim aSim(gN - 1)
