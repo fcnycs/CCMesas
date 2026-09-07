@@ -1,20 +1,19 @@
 '══════════════════════════════════════════════════════════════════════════
-' ResumirMesas_LOC  ·  v3
+' ResumirMesas_LOC  ·  v3.1
 '
 ' Resume el reporte de mesas del SIU y separa el tribunal en
-' Presidente / Vocal 1 / Vocal 2, tomando los roles de la base de datos
+' Presidente / Vocal 1 / Vocal 2 tomando los roles de la base de datos
 ' local (copia de la planilla de Drive "Mesas de Examen").
 '
-' Diferencias con v2:
-'   · Normaliza fuerte los nombres: MUNOZ = MUÑOZ, comas, dobles espacios
-'   · Compara por palabras, no por texto exacto
-'   · Asigna los 3 roles con la MEJOR combinación global, no con el
-'     primero que coincide
-'   · Ubica la fila de la BD por PUNTAJE (código + nombre de materia +
-'     tribunal), así que funciona aunque el código esté vacío o distinto
-'   · Columna G "ESTADO" con el diagnóstico de cada mesa
-'   · Usa la hoja "DOCENTES" de equivalencias si existe
-'   · Carga la BD una sola vez en memoria
+' CAMBIOS RESPECTO DE v3
+'   1. El tribunal ahora es REQUISITO, no un bonus. Si la fila que gana por
+'      código y nombre no comparte al menos 2 docentes con el reporte, se
+'      descarta y se busca la fila por tribunal.
+'   2. Se eliminó el volcado alfabético. Si no se puede determinar el rol,
+'      D/E/F quedan VACÍAS y los docentes se informan en la columna ESTADO.
+'      Antes ese volcado producía resultados creíbles pero al revés.
+'   3. La normalización saca paréntesis y saltos de línea.
+'   4. Sub DiagnosticarMesa() para ver por qué eligió una fila.
 '
 ' IMPORTANTE: reemplazar TODO el módulo anterior, no pegar al lado.
 '══════════════════════════════════════════════════════════════════════════
@@ -35,7 +34,6 @@ Const REP_FILA_1     = 4      ' índice 0-based donde arranca el escaneo del rep
 Const UMBRAL_DOC     = 0.55   ' similitud mínima para dar por igual a dos docentes
 Const PUNTAJE_MIN    = 50     ' puntaje mínimo para aceptar una fila de la BD
 Const USAR_NOMBRE_BD = False  ' False = escribe el nombre como viene del reporte
-                              ' True  = escribe el nombre como está en la BD
 
 
 '──────────────────────── BD cargada en memoria ──────────────────────────
@@ -43,11 +41,17 @@ Dim gN As Long
 Dim gCod() As String
 Dim gCodNum() As String
 Dim gMat() As String
+Dim gMatO() As String
+Dim gCodO() As String
 Dim gDocO() As String
 Dim gDocN() As String
 Dim gEqN As Long
 Dim gEqDe() As String
 Dim gEqA() As String
+
+' Salidas auxiliares de PuntajeFila
+Dim gCoinc As Integer
+Dim gSumSim As Double
 
 
 '══════════════════════════════════════════════════════════════════════════
@@ -63,14 +67,13 @@ Sub ResumirMesasExamen()
     Dim aRepO As Variant, aRepN As Variant, aRepTok As Variant
     Dim vRes As Variant
     Dim j As Integer
-    Dim nOK As Long, nRev As Long
+    Dim nOK As Long, nRev As Long, nSin As Long
     Dim bIncluir As Boolean
 
     oDoc    = ThisComponent
     oSheets = oDoc.Sheets
     oOrig   = oSheets.getByIndex(0)
 
-    '--- 1) Cargar base de datos -----------------------------------------
     oBD = AbrirBaseDatos(RUTA_BD)
     If IsNull(oBD) Then
         MsgBox "No se pudo abrir la base de datos. La macro se detiene.", 16, "Error"
@@ -86,7 +89,6 @@ Sub ResumirMesasExamen()
         Exit Sub
     End If
 
-    '--- 2) Preparar hoja RESUMIDO ---------------------------------------
     If oSheets.hasByName("RESUMIDO") Then oSheets.removeByName("RESUMIDO")
     oSheets.insertNewByName("RESUMIDO", oSheets.getCount())
     oRes = oSheets.getByName("RESUMIDO")
@@ -99,11 +101,11 @@ Sub ResumirMesasExamen()
     oRes.getCellByPosition(5, 0).setString("Vocal 2")
     oRes.getCellByPosition(6, 0).setString("ESTADO")
 
-    '--- 3) Recorrer el reporte ------------------------------------------
     nUlt    = UltimaFila(oOrig)
     nDest   = 1
     nOK     = 0
     nRev    = 0
+    nSin    = 0
     sTitulo = ""
     sCod    = ""
     sMat    = ""
@@ -113,14 +115,12 @@ Sub ResumirMesasExamen()
 
         sA = Trim(oOrig.getCellByPosition(0, nFila).getString())
 
-        ' 3a) Encabezado de materia:  "(13000) ANALISIS DE MEDICAMENTOS"
         If Len(sA) > 0 And Left(sA, 1) = "(" Then
             sTitulo = sA
             sCod    = ExtraerCodigoMateria(sA)
             sMat    = ExtraerNombreMateria(sA)
         End If
 
-        ' 3b) Bloque de mesa: la fila que dice "Mesa: ..."
         sLinea = sA
         If Len(sLinea) = 0 Then sLinea = LeerFilaTexto(oOrig, nFila, 1, 5)
 
@@ -132,7 +132,6 @@ Sub ResumirMesasExamen()
             If InStr(1, sLinea, "El Maitén", 1) > 0 Then bIncluir = False
 
             If bIncluir Then
-                ' encabezados en +1, llamados desde +2 en adelante
                 nDatos = nFila + 2
                 Do While nDatos <= nUlt
                     sFecha = Trim(oOrig.getCellByPosition(1, nDatos).getString())
@@ -150,9 +149,9 @@ Sub ResumirMesasExamen()
 
                     If UBound(aRepO) < 0 Then
                         oRes.getCellByPosition(6, nDest).setString( _
-                            "REVISAR: la mesa no tiene docentes cargados en el reporte")
-                        oRes.getCellByPosition(6, nDest).CellBackColor = RGB(255, 235, 156)
-                        nRev = nRev + 1
+                            "SIN RESOLVER: la mesa no tiene docentes cargados en el reporte")
+                        oRes.getCellByPosition(6, nDest).CellBackColor = RGB(255, 199, 206)
+                        nSin = nSin + 1
                     Else
                         aRepN   = NormalizarLista(aRepO)
                         aRepTok = TokenizarLista(aRepN)
@@ -166,6 +165,9 @@ Sub ResumirMesasExamen()
 
                         If vRes(3) = "OK" Then
                             nOK = nOK + 1
+                        ElseIf Left(vRes(3), 12) = "SIN RESOLVER" Then
+                            nSin = nSin + 1
+                            oRes.getCellByPosition(6, nDest).CellBackColor = RGB(255, 199, 206)
                         Else
                             nRev = nRev + 1
                             oRes.getCellByPosition(6, nDest).CellBackColor = RGB(255, 235, 156)
@@ -182,7 +184,6 @@ Sub ResumirMesasExamen()
         nFila = nFila + 1
     Wend
 
-    '--- 4) Formato y salida ---------------------------------------------
     For j = 0 To 6
         oRes.getColumns().getByIndex(j).OptimalWidth = True
     Next j
@@ -192,7 +193,6 @@ Sub ResumirMesasExamen()
     If oSheets.hasByName("worksheet") Then oSheets.removeByName("worksheet")
     If oSheets.hasByName("Worksheet") Then oSheets.removeByName("Worksheet")
 
-    ' Copia A2:F al portapapeles. La columna G queda afuera a propósito.
     If nDest > 1 Then
         Dim oRango As Object, oFrame As Object, oDisp As Object
         oRango = oRes.getCellRangeByPosition(0, 1, 5, nDest - 1)
@@ -203,58 +203,113 @@ Sub ResumirMesasExamen()
     End If
 
     MsgBox "Proceso terminado." & Chr(10) & Chr(10) & _
-           "Mesas procesadas:            " & (nDest - 1) & Chr(10) & _
-           "  · Sin observaciones:       " & nOK & Chr(10) & _
-           "  · Para revisar (columna G): " & nRev & Chr(10) & Chr(10) & _
+           "Mesas procesadas:                  " & (nDest - 1) & Chr(10) & _
+           "  · Sin observaciones:             " & nOK  & Chr(10) & _
+           "  · Amarillas, revisar diferencia: " & nRev & Chr(10) & _
+           "  · Rojas, sin resolver:           " & nSin & Chr(10) & Chr(10) & _
            "El rango A2:F ya está en el portapapeles.", 0, "Resumen de Mesas"
 End Sub
 
 
 '══════════════════════════════════════════════════════════════════════════
 ' RESOLVER UNA MESA  →  Array(presidente, vocal1, vocal2, estado)
+'
+' Dos etapas:
+'   1) Gana la fila con más puntaje (código + materia + tribunal).
+'   2) Si esa fila NO comparte al menos nReq docentes con el reporte, se
+'      descarta y se busca la fila que mejor coincide por TRIBUNAL.
+'   3) Si tampoco, no se inventa nada: los roles quedan vacíos.
 '══════════════════════════════════════════════════════════════════════════
 Function ResolverMesa(sCod As String, sMat As String, aRepO(), aRepN(), aRepTok()) As Variant
-    Dim nF As Long, nElegida As Long
+    Dim nF As Long, nElegida As Long, nAlt As Long
     Dim dMejor As Double
-    Dim aP() As Double
+    Dim aP() As Double, aS() As Double
+    Dim aC() As Integer
     Dim sCodN As String, sCodNum As String, sMatN As String
-    Dim sPresRef As String
+    Dim sPresRef As String, sNota As String
     Dim bAmbiguo As Boolean
     Dim vSalida As Variant
+    Dim nReq As Integer, nRep As Integer
+    Dim nMejorC As Integer
+    Dim dMejorS As Double
+    Dim i As Integer
 
     sCodN   = NormalizarTexto(sCod)
     sCodNum = SoloDigitos(sCod)
     sMatN   = NormalizarTexto(sMat)
+    nRep    = UBound(aRepN) + 1
 
-    '--- Puntuar todas las filas de la BD --------------------------------
+    ' Cuántos docentes tienen que coincidir para creerle a la fila
+    nReq = 2
+    If nRep < 2 Then nReq = nRep
+
     ReDim aP(gN - 1)
+    ReDim aC(gN - 1)
+    ReDim aS(gN - 1)
+
     dMejor   = -1
     nElegida = -1
     For nF = 0 To gN - 1
         aP(nF) = PuntajeFila(nF, sCodN, sCodNum, sMatN, aRepN, aRepTok)
+        aC(nF) = gCoinc
+        aS(nF) = gSumSim
         If aP(nF) > dMejor Then
             dMejor   = aP(nF)
             nElegida = nF
         End If
     Next nF
 
-    '--- Ninguna fila sirve ----------------------------------------------
-    If nElegida < 0 Or dMejor < PUNTAJE_MIN Then
-        vSalida = Array("", "", "", _
-            "REVISAR: no se encontró la materia en la BD (" & Trim(sCod & " " & sMat) & ")")
-        If UBound(aRepO) >= 0 Then vSalida(0) = aRepO(0)
-        If UBound(aRepO) >= 1 Then vSalida(1) = aRepO(1)
-        If UBound(aRepO) >= 2 Then vSalida(2) = aRepO(2)
-        ResolverMesa = vSalida
+    sNota = ""
+
+    '--- Etapa 2: el tribunal manda ---------------------------------------
+    If nElegida < 0 Or dMejor < PUNTAJE_MIN Or aC(nElegida) < nReq Then
+        nMejorC = 0
+        dMejorS = 0
+        nAlt    = -1
+        For nF = 0 To gN - 1
+            If aC(nF) > nMejorC Then
+                nMejorC = aC(nF)
+                dMejorS = aS(nF)
+                nAlt    = nF
+            ElseIf aC(nF) = nMejorC And nMejorC > 0 Then
+                If aS(nF) > dMejorS Then
+                    dMejorS = aS(nF)
+                    nAlt    = nF
+                End If
+            End If
+        Next nF
+
+        If nAlt >= 0 And nMejorC >= nReq Then
+            If nAlt <> nElegida Then
+                sNota = " | Fila ubicada por el tribunal: en la BD figura como [" & _
+                        Trim(gCodO(nAlt) & " " & gMatO(nAlt)) & "]"
+            End If
+            nElegida = nAlt
+        Else
+            nElegida = -1
+        End If
+    End If
+
+    '--- Sin resolver: NO se inventa ninguna asignación --------------------
+    If nElegida < 0 Then
+        Dim sLista As String
+        sLista = ""
+        For i = 0 To UBound(aRepO)
+            If i > 0 Then sLista = sLista & ", "
+            sLista = sLista & aRepO(i)
+        Next i
+        ResolverMesa = Array("", "", "", _
+            "SIN RESOLVER: no se encontró en la BD una mesa de [" & Trim(sCod & " " & sMat) & _
+            "] con este tribunal. Docentes del reporte: " & sLista)
         Exit Function
     End If
 
-    '--- ¿Empate con presidentes distintos? ------------------------------
+    '--- Empate con presidentes distintos ---------------------------------
     bAmbiguo = False
     sPresRef = gDocN(nElegida, 0)
     For nF = 0 To gN - 1
         If nF <> nElegida Then
-            If aP(nF) >= dMejor - 0.01 Then
+            If aP(nF) >= aP(nElegida) - 0.01 And aC(nF) >= nReq Then
                 If gDocN(nF, 0) <> sPresRef Then bAmbiguo = True
             End If
         End If
@@ -263,10 +318,14 @@ Function ResolverMesa(sCod As String, sMat As String, aRepO(), aRepN(), aRepTok(
     vSalida = AsignarRoles(aRepO, aRepN, nElegida)
 
     If bAmbiguo Then
+        sNota = sNota & " | Hay otra fila en la BD que encaja igual pero con otro presidente"
+    End If
+
+    If Len(sNota) > 0 Then
         If vSalida(3) = "OK" Then
-            vSalida(3) = "REVISAR: varias filas de la BD encajan igual y con presidentes distintos"
+            vSalida(3) = "REVISAR:" & sNota
         Else
-            vSalida(3) = vSalida(3) & " | Además hay filas empatadas con presidentes distintos"
+            vSalida(3) = vSalida(3) & sNota
         End If
     End If
 
@@ -275,7 +334,9 @@ End Function
 
 
 '══════════════════════════════════════════════════════════════════════════
-' PUNTAJE de una fila de la BD frente a la mesa del reporte
+' PUNTAJE de una fila de la BD frente a la mesa del reporte.
+' Deja además en gCoinc la cantidad de docentes que coinciden y en
+' gSumSim la suma de similitudes.
 '══════════════════════════════════════════════════════════════════════════
 Function PuntajeFila(nF As Long, sCodN As String, sCodNum As String, _
                      sMatN As String, aRepN(), aRepTok()) As Double
@@ -284,9 +345,10 @@ Function PuntajeFila(nF As Long, sCodN As String, sCodNum As String, _
     Dim vTok As Variant
     Dim bPosible As Boolean
 
-    p = 0
+    p       = 0
+    gCoinc  = 0
+    gSumSim = 0
 
-    ' Código de materia
     If Len(gCod(nF)) > 0 And Len(sCodN) > 0 Then
         If gCod(nF) = sCodN Then
             p = p + 100
@@ -295,7 +357,6 @@ Function PuntajeFila(nF As Long, sCodN As String, sCodNum As String, _
         End If
     End If
 
-    ' Nombre de materia
     If Len(gMat(nF)) > 0 And Len(sMatN) > 0 Then
         If gMat(nF) = sMatN Then
             p = p + 55
@@ -304,13 +365,11 @@ Function PuntajeFila(nF As Long, sCodN As String, sCodNum As String, _
         End If
     End If
 
-    ' Tribunal: cada docente del reporte suma según su mejor coincidencia
     For i = 0 To UBound(aRepN)
         vTok = aRepTok(i)
         dMax = 0
         For j = 0 To 2
             If Len(gDocN(nF, j)) > 0 Then
-                ' pre-filtro barato: alguna palabra larga en común
                 bPosible = False
                 If UBound(vTok) < 0 Then
                     bPosible = True
@@ -322,14 +381,17 @@ Function PuntajeFila(nF As Long, sCodN As String, sCodNum As String, _
                         End If
                     Next k
                 End If
-
                 If bPosible Then
                     d = Similitud(aRepN(i), gDocN(nF, j))
                     If d > dMax Then dMax = d
                 End If
             End If
         Next j
-        If dMax >= UMBRAL_DOC Then p = p + 20 * dMax
+        If dMax >= UMBRAL_DOC Then
+            p       = p + 20 * dMax
+            gCoinc  = gCoinc + 1
+            gSumSim = gSumSim + dMax
+        End If
     Next i
 
     PuntajeFila = p
@@ -338,9 +400,6 @@ End Function
 
 '══════════════════════════════════════════════════════════════════════════
 ' ASIGNACIÓN GLOBAL DE ROLES
-' Toma siempre el par (docente del reporte, rol de la BD) de mayor
-' similitud, lo fija, y repite. Así ninguna coincidencia parcial se come
-' el lugar de una coincidencia mejor.
 '══════════════════════════════════════════════════════════════════════════
 Function AsignarRoles(aRepO(), aRepN(), nF As Long) As Variant
     Dim nRep As Integer
@@ -403,7 +462,9 @@ Function AsignarRoles(aRepO(), aRepN(), nF As Long) As Variant
 
     sEstado = ""
 
-    ' Docentes del reporte que no coinciden con nadie de la BD
+    ' Docentes del reporte que no coinciden con nadie de la fila.
+    ' Se ubican en un casillero libre solo porque la fila YA fue validada
+    ' por el tribunal: son diferencias reales, no un relleno a ciegas.
     For i = 0 To nRep - 1
         If Not aUsado(i) Then
             bColocado = False
@@ -412,8 +473,13 @@ Function AsignarRoles(aRepO(), aRepN(), nF As Long) As Variant
                     sOut(j)   = aRepO(i)
                     aAsig(j)  = -2
                     bColocado = True
-                    sEstado = sEstado & "DISTINTO en " & NombreRol(j) & _
-                              ": reporte=[" & aRepO(i) & "] / BD=[" & gDocO(nF, j) & "]. "
+                    If Len(gDocO(nF, j)) = 0 Then
+                        sEstado = sEstado & "DE MÁS en el reporte: [" & aRepO(i) & _
+                                  "] (en la BD ese rol está vacío). "
+                    Else
+                        sEstado = sEstado & "DISTINTO en " & NombreRol(j) & _
+                                  ": reporte=[" & aRepO(i) & "] / BD=[" & gDocO(nF, j) & "]. "
+                    End If
                 End If
             Next j
             If Not bColocado Then
@@ -422,7 +488,6 @@ Function AsignarRoles(aRepO(), aRepN(), nF As Long) As Variant
         End If
     Next i
 
-    ' Roles de la BD que quedaron sin nadie
     For j = 0 To 2
         If Len(sOut(j)) = 0 And Len(gDocO(nF, j)) > 0 Then
             sEstado = sEstado & "FALTA " & NombreRol(j) & " (BD: [" & gDocO(nF, j) & "]). "
@@ -449,9 +514,90 @@ End Function
 
 
 '══════════════════════════════════════════════════════════════════════════
+' DIAGNÓSTICO
+' Pegar la línea de la materia y la celda de docentes del reporte y
+' muestra las 6 filas de la BD mejor puntuadas, con el desglose.
+'══════════════════════════════════════════════════════════════════════════
+Sub DiagnosticarMesa()
+    Dim oBD As Object
+    Dim sTitulo As String, sDocentes As String
+    Dim sCod As String, sMat As String
+    Dim sCodN As String, sCodNum As String, sMatN As String
+    Dim aRepO As Variant, aRepN As Variant, aRepTok As Variant
+    Dim aP() As Double
+    Dim aC() As Integer
+    Dim nF As Long, i As Integer, k As Integer
+    Dim nTop As Long
+    Dim dTop As Double
+    Dim bUsada() As Boolean
+    Dim sMsg As String
+
+    sTitulo = InputBox("Pegá la línea de la materia del reporte." & Chr(10) & _
+                       "Ej:  (16055) BIOLOGIA EVOLUTIVA", "Diagnóstico 1/2")
+    If Len(Trim(sTitulo)) = 0 Then Exit Sub
+
+    sDocentes = InputBox("Pegá la celda de Docentes del reporte." & Chr(10) & _
+                         "Ej:  MARCINKEVICIUS MAURO SEBASTIAN, RIERA MARINA GRISELDA", "Diagnóstico 2/2")
+    If Len(Trim(sDocentes)) = 0 Then Exit Sub
+
+    oBD = AbrirBaseDatos(RUTA_BD)
+    If IsNull(oBD) Then Exit Sub
+    CargarBaseDatos(oBD)
+    oBD.close(True)
+
+    sCod    = ExtraerCodigoMateria(sTitulo)
+    sMat    = ExtraerNombreMateria(sTitulo)
+    sCodN   = NormalizarTexto(sCod)
+    sCodNum = SoloDigitos(sCod)
+    sMatN   = NormalizarTexto(sMat)
+
+    aRepO   = SepararDocentes(sDocentes)
+    aRepN   = NormalizarLista(aRepO)
+    aRepTok = TokenizarLista(aRepN)
+
+    ReDim aP(gN - 1)
+    ReDim aC(gN - 1)
+    ReDim bUsada(gN - 1)
+    For nF = 0 To gN - 1
+        aP(nF) = PuntajeFila(nF, sCodN, sCodNum, sMatN, aRepN, aRepTok)
+        aC(nF) = gCoinc
+    Next nF
+
+    sMsg = "REPORTE" & Chr(10) & _
+           "  código   : [" & sCod & "]  -> normalizado [" & sCodN & "]" & Chr(10) & _
+           "  materia  : [" & sMat & "]  -> normalizado [" & sMatN & "]" & Chr(10) & _
+           "  docentes :" & Chr(10)
+    For i = 0 To UBound(aRepN)
+        sMsg = sMsg & "     " & (i + 1) & ") [" & aRepN(i) & "]" & Chr(10)
+    Next i
+    sMsg = sMsg & Chr(10) & "FILAS DE LA BD MEJOR PUNTUADAS" & Chr(10) & _
+           "(se necesitan 2 docentes coincidentes para aceptar la fila)" & Chr(10) & Chr(10)
+
+    For k = 1 To 6
+        dTop = -1
+        nTop = -1
+        For nF = 0 To gN - 1
+            If Not bUsada(nF) And aP(nF) > dTop Then
+                dTop = aP(nF)
+                nTop = nF
+            End If
+        Next nF
+        If nTop < 0 Then Exit For
+        bUsada(nTop) = True
+        sMsg = sMsg & k & ")  puntaje " & Format(dTop, "0.0") & _
+               "   docentes que coinciden: " & aC(nTop) & Chr(10) & _
+               "     BD: [" & gCodO(nTop) & "] " & gMatO(nTop) & Chr(10) & _
+               "     P : " & gDocO(nTop, 0) & Chr(10) & _
+               "     V1: " & gDocO(nTop, 1) & Chr(10) & _
+               "     V2: " & gDocO(nTop, 2) & Chr(10) & Chr(10)
+    Next k
+
+    MsgBox sMsg, 0, "Diagnóstico de la mesa"
+End Sub
+
+
+'══════════════════════════════════════════════════════════════════════════
 ' SIMILITUD ENTRE DOS NOMBRES YA NORMALIZADOS
-' Cuenta palabras compartidas sobre el nombre más corto, así tolera
-' segundos nombres que aparecen en un lado y no en el otro.
 '══════════════════════════════════════════════════════════════════════════
 Function Similitud(sA As String, sB As String) As Double
     Dim aA As Variant, aB As Variant
@@ -491,8 +637,6 @@ Function Similitud(sA As String, sB As String) As Double
     If UBound(aB) + 1 < nMin Then nMin = UBound(aB) + 1
     If nMin < 1 Then nMin = 1
 
-    ' Con una sola palabra en común el puntaje queda muy bajo a propósito:
-    ' evita confundir dos docentes que comparten apellido.
     If nCom < 2 Then
         Similitud = nCom / (nMin * 3)
     Else
@@ -522,15 +666,21 @@ Function NormalizarTexto(sTexto As String) As String
     Next i
 
     r = UCase(r)
-    r = Replace(r, ",",     " ")
-    r = Replace(r, ".",     " ")
-    r = Replace(r, ";",     " ")
-    r = Replace(r, ":",     " ")
-    r = Replace(r, "-",     " ")
-    r = Replace(r, "_",     " ")
-    r = Replace(r, "/",     " ")
+    r = Replace(r, Chr(10), " ")
+    r = Replace(r, Chr(13), " ")
     r = Replace(r, Chr(9),  " ")
     r = Replace(r, Chr(160)," ")
+    r = Replace(r, ",",  " ")
+    r = Replace(r, ".",  " ")
+    r = Replace(r, ";",  " ")
+    r = Replace(r, ":",  " ")
+    r = Replace(r, "-",  " ")
+    r = Replace(r, "_",  " ")
+    r = Replace(r, "/",  " ")
+    r = Replace(r, "(",  " ")
+    r = Replace(r, ")",  " ")
+    r = Replace(r, "'",  " ")
+    r = Replace(r, """", " ")
     Do While InStr(r, "  ") > 0
         r = Replace(r, "  ", " ")
     Loop
@@ -554,7 +704,6 @@ Function NormalizarLista(aOrig()) As Variant
 End Function
 
 
-' Devuelve, por cada nombre, sus palabras de 4 o más letras (para pre-filtrar)
 Function TokenizarLista(aNorm()) As Variant
     Dim aOut() As Variant
     Dim i As Integer
@@ -717,6 +866,8 @@ Sub CargarBaseDatos(oBD As Object)
     ReDim gCod(nUlt)
     ReDim gCodNum(nUlt)
     ReDim gMat(nUlt)
+    ReDim gCodO(nUlt)
+    ReDim gMatO(nUlt)
     ReDim gDocO(nUlt, 2)
     ReDim gDocN(nUlt, 2)
 
@@ -729,6 +880,8 @@ Sub CargarBaseDatos(oBD As Object)
         sV2  = Trim(oS.getCellByPosition(BD_COL_VOC2, nFila).getString())
 
         If Len(sMat) > 0 Or Len(sP) > 0 Then
+            gCodO(n)    = sCod
+            gMatO(n)    = sMat
             gCod(n)     = NormalizarTexto(sCod)
             gCodNum(n)  = SoloDigitos(sCod)
             gMat(n)     = NormalizarTexto(sMat)
@@ -743,7 +896,6 @@ Sub CargarBaseDatos(oBD As Object)
     Next nFila
     gN = n
 
-    '--- Equivalencias opcionales:  hoja DOCENTES  A=Drive  B=Reporte  C=Correcto
     gEqN = 0
     ReDim gEqDe(1)
     ReDim gEqA(1)
