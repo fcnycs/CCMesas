@@ -223,7 +223,8 @@ End Sub
 Function ResolverMesa(sCod As String, sMat As String, aRepO(), aRepN(), aRepTok()) As Variant
     Dim nF As Long, nElegida As Long, nAlt As Long
     Dim dMejor As Double
-    Dim aP() As Double, aS() As Double
+    Dim aP() As Double
+    Dim aSim() As Double
     Dim aC() As Integer
     Dim sCodN As String, sCodNum As String, sMatN As String
     Dim sPresRef As String, sNota As String
@@ -245,14 +246,14 @@ Function ResolverMesa(sCod As String, sMat As String, aRepO(), aRepN(), aRepTok(
 
     ReDim aP(gN - 1)
     ReDim aC(gN - 1)
-    ReDim aS(gN - 1)
+    ReDim aSim(gN - 1)
 
     dMejor   = -1
     nElegida = -1
     For nF = 0 To gN - 1
         aP(nF) = PuntajeFila(nF, sCodN, sCodNum, sMatN, aRepN, aRepTok)
         aC(nF) = gCoinc
-        aS(nF) = gSumSim
+        aSim(nF) = gSumSim
         If aP(nF) > dMejor Then
             dMejor   = aP(nF)
             nElegida = nF
@@ -262,18 +263,26 @@ Function ResolverMesa(sCod As String, sMat As String, aRepO(), aRepN(), aRepTok(
     sNota = ""
 
     '--- Etapa 2: el tribunal manda ---------------------------------------
-    If nElegida < 0 Or dMejor < PUNTAJE_MIN Or aC(nElegida) < nReq Then
+    ' Ojo: Basic no hace cortocircuito, así que no se puede evaluar
+    ' aC(nElegida) en la misma condición que nElegida < 0.
+    Dim bDescartar As Boolean
+    bDescartar = True
+    If nElegida >= 0 Then
+        If dMejor >= PUNTAJE_MIN And aC(nElegida) >= nReq Then bDescartar = False
+    End If
+
+    If bDescartar Then
         nMejorC = 0
         dMejorS = 0
         nAlt    = -1
         For nF = 0 To gN - 1
             If aC(nF) > nMejorC Then
                 nMejorC = aC(nF)
-                dMejorS = aS(nF)
+                dMejorS = aSim(nF)
                 nAlt    = nF
             ElseIf aC(nF) = nMejorC And nMejorC > 0 Then
-                If aS(nF) > dMejorS Then
-                    dMejorS = aS(nF)
+                If aSim(nF) > dMejorS Then
+                    dMejorS = aSim(nF)
                     nAlt    = nF
                 End If
             End If
