@@ -1,388 +1,825 @@
+'══════════════════════════════════════════════════════════════════════════
+' ResumirMesas_LOC  ·  v3
+'
+' Resume el reporte de mesas del SIU y separa el tribunal en
+' Presidente / Vocal 1 / Vocal 2, tomando los roles de la base de datos
+' local (copia de la planilla de Drive "Mesas de Examen").
+'
+' Diferencias con v2:
+'   · Normaliza fuerte los nombres: MUNOZ = MUÑOZ, comas, dobles espacios
+'   · Compara por palabras, no por texto exacto
+'   · Asigna los 3 roles con la MEJOR combinación global, no con el
+'     primero que coincide
+'   · Ubica la fila de la BD por PUNTAJE (código + nombre de materia +
+'     tribunal), así que funciona aunque el código esté vacío o distinto
+'   · Columna G "ESTADO" con el diagnóstico de cada mesa
+'   · Usa la hoja "DOCENTES" de equivalencias si existe
+'   · Carga la BD una sola vez en memoria
+'
+' IMPORTANTE: reemplazar TODO el módulo anterior, no pegar al lado.
+'══════════════════════════════════════════════════════════════════════════
+
+
+'───────────────────────────── CONFIGURACIÓN ─────────────────────────────
+Const RUTA_BD        = "/home/cristian/Documentos/ALUMNOS/BASE DE DATOS/Base de datos de MESAS Y DOCENTES.ods"
+
+Const BD_FILA_1      = 5      ' índice 0-based de la 1ra fila de datos (= fila 6)
+Const BD_COL_COD     = 0      ' A  CÓDIGO
+Const BD_COL_MAT     = 1      ' B  ASIGNATURA
+Const BD_COL_PRES    = 4      ' E  PRESIDENTE
+Const BD_COL_VOC1    = 5      ' F  VOCAL
+Const BD_COL_VOC2    = 6      ' G  VOCAL
+
+Const REP_FILA_1     = 4      ' índice 0-based donde arranca el escaneo del reporte
+
+Const UMBRAL_DOC     = 0.55   ' similitud mínima para dar por igual a dos docentes
+Const PUNTAJE_MIN    = 50     ' puntaje mínimo para aceptar una fila de la BD
+Const USAR_NOMBRE_BD = False  ' False = escribe el nombre como viene del reporte
+                              ' True  = escribe el nombre como está en la BD
+
+
+'──────────────────────── BD cargada en memoria ──────────────────────────
+Dim gN As Long
+Dim gCod() As String
+Dim gCodNum() As String
+Dim gMat() As String
+Dim gDocO() As String
+Dim gDocN() As String
+Dim gEqN As Long
+Dim gEqDe() As String
+Dim gEqA() As String
+
+
+'══════════════════════════════════════════════════════════════════════════
+' PROCEDIMIENTO PRINCIPAL
+'══════════════════════════════════════════════════════════════════════════
 Sub ResumirMesasExamen()
-    Dim oDoc As Object
-    Dim oSheets As Object
-    Dim oSheetOriginal As Object
-    Dim oSheetResumido As Object
-    Dim nFilaActual As Long
-    Dim nFilaDestino As Long
-    Dim sCellValue As String
-    Dim nLastRow As Long
-    Dim oDocBaseDatos As Object
-    Dim sRutaBaseDatos As String
-    
-    ' Obtener el documento actual
-    oDoc = ThisComponent
+    Dim oDoc As Object, oSheets As Object, oOrig As Object, oRes As Object
+    Dim oBD As Object
+    Dim nUlt As Long, nFila As Long, nDest As Long, nDatos As Long
+    Dim sA As String, sLinea As String
+    Dim sTitulo As String, sCod As String, sMat As String
+    Dim sFecha As String, sHora As String, sDocentes As String
+    Dim aRepO As Variant, aRepN As Variant, aRepTok As Variant
+    Dim vRes As Variant
+    Dim j As Integer
+    Dim nOK As Long, nRev As Long
+    Dim bIncluir As Boolean
+
+    oDoc    = ThisComponent
     oSheets = oDoc.Sheets
-    
-    ' Obtener la hoja original (asumimos que es la primera)
-    oSheetOriginal = oSheets.getByIndex(0)
-    
-    ' Definir la ruta de la base de datos
-    sRutaBaseDatos = "/home/cristian/Documentos/ALUMNOS/BASE DE DATOS/Base de datos de MESAS Y DOCENTES.ods"
-    
-    ' Intentar abrir el archivo de base de datos
-    oDocBaseDatos = AbrirBaseDatos(sRutaBaseDatos)
-    
-    ' Si no se pudo abrir, terminar la macro
-    If IsNull(oDocBaseDatos) Then
-        MsgBox "No se pudo abrir la base de datos. La macro se detendrá.", 16, "Error"
+    oOrig   = oSheets.getByIndex(0)
+
+    '--- 1) Cargar base de datos -----------------------------------------
+    oBD = AbrirBaseDatos(RUTA_BD)
+    If IsNull(oBD) Then
+        MsgBox "No se pudo abrir la base de datos. La macro se detiene.", 16, "Error"
         Exit Sub
     End If
-    
-    ' Crear nueva hoja "RESUMIDO" si no existe
-    If oSheets.hasByName("RESUMIDO") Then
-        oSheets.removeByName("RESUMIDO")
+    CargarBaseDatos(oBD)
+    oBD.close(True)
+
+    If gN = 0 Then
+        MsgBox "La base de datos se abrió pero no se leyó ninguna mesa." & Chr(10) & _
+               "Verificá que los datos empiecen en la fila " & (BD_FILA_1 + 1) & _
+               " de la primera hoja.", 16, "Error"
+        Exit Sub
     End If
+
+    '--- 2) Preparar hoja RESUMIDO ---------------------------------------
+    If oSheets.hasByName("RESUMIDO") Then oSheets.removeByName("RESUMIDO")
     oSheets.insertNewByName("RESUMIDO", oSheets.getCount())
-    oSheetResumido = oSheets.getByName("RESUMIDO")
-    
-    ' Crear encabezados en la hoja RESUMIDO
-    oSheetResumido.getCellByPosition(0, 0).setString("Materia")
-    oSheetResumido.getCellByPosition(1, 0).setString("Fecha")
-    oSheetResumido.getCellByPosition(2, 0).setString("Hora")
-    oSheetResumido.getCellByPosition(3, 0).setString("Presidente")
-    oSheetResumido.getCellByPosition(4, 0).setString("Vocal 1")
-    oSheetResumido.getCellByPosition(5, 0).setString("Vocal 2")
-    
-    ' Determinar la última fila con datos
-    nLastRow = 1500
-    
-    ' Inicializar fila de destino
-    nFilaDestino = 1
-    
-    ' Recorrer la hoja original buscando nombres de materias
-    nFilaActual = 5 ' Comenzar desde la fila 6 (índice 5)
-    
-    While nFilaActual < nLastRow
-        sCellValue = Trim(oSheetOriginal.getCellByPosition(0, nFilaActual).getString())
-        
-        ' Verificar si la celda contiene un código de materia
-        If Len(sCellValue) > 0 And Left(sCellValue, 1) = "(" Then
-            ' Leer el subtítulo
-            Dim sSubtitulo As String
-            sSubtitulo = Trim(oSheetOriginal.getCellByPosition(0, nFilaActual + 1).getString())
-            
-            ' Filtrar
-            Dim bIncluirMesa As Boolean
-            bIncluirMesa = True
-            
-            If InStr(1, sSubtitulo, "Libre", 1) > 0 Then
-                bIncluirMesa = False
-            End If
-            
-            If InStr(1, sSubtitulo, "El Maiten", 1) > 0 Then
-                bIncluirMesa = False
-            End If
-            
-            ' Solo procesar si la mesa pasa los filtros
-            If bIncluirMesa Then
-                ' Copiar nombre de la materia
-                oSheetResumido.getCellByPosition(0, nFilaDestino).setString(sCellValue)
-                
-                ' Extraer el código numérico de la materia
-                Dim sCodigoMateria As String
-                sCodigoMateria = ExtraerCodigoMateria(sCellValue)
-                
-                ' Buscar la fila con los datos (3 filas más abajo)
-                Dim nFilaDatos As Long
-                nFilaDatos = nFilaActual + 3
-            
-                ' Verificar que la fila de datos existe
-                If nFilaDatos < nLastRow Then
-                    ' Copiar Fecha
-                    Dim sFecha As String
-                    sFecha = Trim(oSheetOriginal.getCellByPosition(1, nFilaDatos).getString())
-                    oSheetResumido.getCellByPosition(1, nFilaDestino).setString(sFecha)
-                    
-                    ' Copiar Hora
-                    Dim sHora As String
-                    sHora = Trim(oSheetOriginal.getCellByPosition(2, nFilaDatos).getString())
-                    oSheetResumido.getCellByPosition(2, nFilaDestino).setString(sHora)
-                    
-                    ' Leer Docentes del reporte (columna D)
-                    Dim sDocentesReporte As String
-                    sDocentesReporte = Trim(oSheetOriginal.getCellByPosition(3, nFilaDatos).getString())
-                    
-                    ' Dividir docentes por coma
-                    Dim aDocentesReporte() As String
-                    aDocentesReporte = Split(sDocentesReporte, ",")
-                    
-                    ' Limpiar espacios de cada docente
-                    Dim i As Integer
-                    For i = LBound(aDocentesReporte) To UBound(aDocentesReporte)
-                        aDocentesReporte(i) = Trim(aDocentesReporte(i))
-                    Next i
-                    
-                    ' Buscar la fila de esta materia en la base de datos y asignar roles
-                    Dim sPresidente As String
-                    Dim sVocal1 As String
-                    Dim sVocal2 As String
-                    
-                    AsignarRolesDocentes(oDocBaseDatos, sCodigoMateria, aDocentesReporte, sPresidente, sVocal1, sVocal2)
-                    
-                    ' Escribir los docentes en las columnas correspondientes
-                    oSheetResumido.getCellByPosition(3, nFilaDestino).setString(sPresidente)
-                    oSheetResumido.getCellByPosition(4, nFilaDestino).setString(sVocal1)
-                    oSheetResumido.getCellByPosition(5, nFilaDestino).setString(sVocal2)
-                End If
-                
-                ' Incrementar fila de destino
-                nFilaDestino = nFilaDestino + 1
+    oRes = oSheets.getByName("RESUMIDO")
+
+    oRes.getCellByPosition(0, 0).setString("Materia")
+    oRes.getCellByPosition(1, 0).setString("Fecha")
+    oRes.getCellByPosition(2, 0).setString("Hora")
+    oRes.getCellByPosition(3, 0).setString("Presidente")
+    oRes.getCellByPosition(4, 0).setString("Vocal 1")
+    oRes.getCellByPosition(5, 0).setString("Vocal 2")
+    oRes.getCellByPosition(6, 0).setString("ESTADO")
+
+    '--- 3) Recorrer el reporte ------------------------------------------
+    nUlt    = UltimaFila(oOrig)
+    nDest   = 1
+    nOK     = 0
+    nRev    = 0
+    sTitulo = ""
+    sCod    = ""
+    sMat    = ""
+
+    nFila = REP_FILA_1
+    While nFila <= nUlt
+
+        sA = Trim(oOrig.getCellByPosition(0, nFila).getString())
+
+        ' 3a) Encabezado de materia:  "(13000) ANALISIS DE MEDICAMENTOS"
+        If Len(sA) > 0 And Left(sA, 1) = "(" Then
+            sTitulo = sA
+            sCod    = ExtraerCodigoMateria(sA)
+            sMat    = ExtraerNombreMateria(sA)
+        End If
+
+        ' 3b) Bloque de mesa: la fila que dice "Mesa: ..."
+        sLinea = sA
+        If Len(sLinea) = 0 Then sLinea = LeerFilaTexto(oOrig, nFila, 1, 5)
+
+        If InStr(sLinea, "Mesa:") > 0 And Len(sTitulo) > 0 Then
+
+            bIncluir = True
+            If InStr(1, sLinea, "Libre", 1) > 0     Then bIncluir = False
+            If InStr(1, sLinea, "El Maiten", 1) > 0 Then bIncluir = False
+            If InStr(1, sLinea, "El Maitén", 1) > 0 Then bIncluir = False
+
+            If bIncluir Then
+                ' encabezados en +1, llamados desde +2 en adelante
+                nDatos = nFila + 2
+                Do While nDatos <= nUlt
+                    sFecha = Trim(oOrig.getCellByPosition(1, nDatos).getString())
+                    If Len(sFecha) = 0 Then Exit Do
+                    If Left(Trim(oOrig.getCellByPosition(0, nDatos).getString()), 1) = "(" Then Exit Do
+
+                    sHora     = Trim(oOrig.getCellByPosition(2, nDatos).getString())
+                    sDocentes = Trim(oOrig.getCellByPosition(3, nDatos).getString())
+
+                    aRepO = SepararDocentes(sDocentes)
+
+                    oRes.getCellByPosition(0, nDest).setString(sTitulo)
+                    oRes.getCellByPosition(1, nDest).setString(sFecha)
+                    oRes.getCellByPosition(2, nDest).setString(sHora)
+
+                    If UBound(aRepO) < 0 Then
+                        oRes.getCellByPosition(6, nDest).setString( _
+                            "REVISAR: la mesa no tiene docentes cargados en el reporte")
+                        oRes.getCellByPosition(6, nDest).CellBackColor = RGB(255, 235, 156)
+                        nRev = nRev + 1
+                    Else
+                        aRepN   = NormalizarLista(aRepO)
+                        aRepTok = TokenizarLista(aRepN)
+
+                        vRes = ResolverMesa(sCod, sMat, aRepO, aRepN, aRepTok)
+
+                        oRes.getCellByPosition(3, nDest).setString(vRes(0))
+                        oRes.getCellByPosition(4, nDest).setString(vRes(1))
+                        oRes.getCellByPosition(5, nDest).setString(vRes(2))
+                        oRes.getCellByPosition(6, nDest).setString(vRes(3))
+
+                        If vRes(3) = "OK" Then
+                            nOK = nOK + 1
+                        Else
+                            nRev = nRev + 1
+                            oRes.getCellByPosition(6, nDest).CellBackColor = RGB(255, 235, 156)
+                        End If
+                    End If
+
+                    nDest  = nDest + 1
+                    nDatos = nDatos + 1
+                Loop
+                nFila = nDatos - 1
             End If
         End If
-        
-        ' Avanzar a la siguiente fila
-        nFilaActual = nFilaActual + 1
+
+        nFila = nFila + 1
     Wend
-    
-    ' Cerrar el documento de base de datos
-    oDocBaseDatos.close(True)
-    
-    ' Ajustar ancho de columnas
-    Dim j As Integer
-    For j = 0 To 5
-        oSheetResumido.getColumns().getByIndex(j).OptimalWidth = True
+
+    '--- 4) Formato y salida ---------------------------------------------
+    For j = 0 To 6
+        oRes.getColumns().getByIndex(j).OptimalWidth = True
     Next j
-    
-    ' Activar la hoja RESUMIDO
-    oDoc.getCurrentController().setActiveSheet(oSheetResumido)
-    
-    ' Eliminar la hoja "worksheet" si existe
-    If oSheets.hasByName("worksheet") Then
-        oSheets.removeByName("worksheet")
-    End If
-    
-    ' Copiar todos los datos (sin encabezados) al portapapeles
-    ' Rango desde A2 hasta F[última fila con datos]
-    If nFilaDestino > 1 Then
-        Dim oRango As Object
-        Dim nUltimaFila As Long
-        nUltimaFila = nFilaDestino - 1
-        
-        ' Crear el rango desde A2 hasta F[última fila]
-        oRango = oSheetResumido.getCellRangeByPosition(0, 1, 5, nUltimaFila)
-        
-        ' Seleccionar el rango
+
+    oDoc.getCurrentController().setActiveSheet(oRes)
+
+    If oSheets.hasByName("worksheet") Then oSheets.removeByName("worksheet")
+    If oSheets.hasByName("Worksheet") Then oSheets.removeByName("Worksheet")
+
+    ' Copia A2:F al portapapeles. La columna G queda afuera a propósito.
+    If nDest > 1 Then
+        Dim oRango As Object, oFrame As Object, oDisp As Object
+        oRango = oRes.getCellRangeByPosition(0, 1, 5, nDest - 1)
         oDoc.getCurrentController().select(oRango)
-        
-        ' Copiar al portapapeles
-        Dim oFrame As Object
-        Dim oDispatcher As Object
         oFrame = oDoc.getCurrentController().getFrame()
-        oDispatcher = createUnoService("com.sun.star.frame.DispatchHelper")
-        oDispatcher.executeDispatch(oFrame, ".uno:Copy", "", 0, Array())
+        oDisp  = createUnoService("com.sun.star.frame.DispatchHelper")
+        oDisp.executeDispatch(oFrame, ".uno:Copy", "", 0, Array())
     End If
-    
-    MsgBox "Proceso completado. Se procesaron " & (nFilaDestino - 1) & " materias." & Chr(10) & _
-           "Los datos están listos para pegar en otro documento.", 0, "Resumen de Mesas"
-    
+
+    MsgBox "Proceso terminado." & Chr(10) & Chr(10) & _
+           "Mesas procesadas:            " & (nDest - 1) & Chr(10) & _
+           "  · Sin observaciones:       " & nOK & Chr(10) & _
+           "  · Para revisar (columna G): " & nRev & Chr(10) & Chr(10) & _
+           "El rango A2:F ya está en el portapapeles.", 0, "Resumen de Mesas"
 End Sub
 
-' Función para extraer el código numérico de la materia
-Function ExtraerCodigoMateria(sTextoCompleto As String) As String
-    Dim sResultado As String
-    
-    sTextoCompleto = Trim(sTextoCompleto)
-    
-    If Left(sTextoCompleto, 1) = "(" Then
-        Dim nPosParentesis As Integer
-        nPosParentesis = InStr(sTextoCompleto, ")")
-        
-        If nPosParentesis > 0 Then
-            sResultado = Mid(sTextoCompleto, 2, nPosParentesis - 2)
-        Else
-            sResultado = Mid(sTextoCompleto, 2)
-        End If
-    Else
-        sResultado = sTextoCompleto
-    End If
-    
-    ExtraerCodigoMateria = Trim(sResultado)
-End Function
 
-' Función para abrir la base de datos
-Function AbrirBaseDatos(sRutaArchivo As String) As Object
-    Dim oDocBaseDatos As Object
-    Dim oFileAccess As Object
-    Dim bArchivoExiste As Boolean
-    
-    oFileAccess = CreateUnoService("com.sun.star.ucb.SimpleFileAccess")
-    
-    On Error Resume Next
-    bArchivoExiste = oFileAccess.exists(ConvertToURL(sRutaArchivo))
-    On Error Goto 0
-    
-    If bArchivoExiste Then
-        On Error Resume Next
-        oDocBaseDatos = StarDesktop.loadComponentFromURL(ConvertToURL(sRutaArchivo), "_blank", 0, Array())
-        On Error Goto 0
-        
-        If Not IsNull(oDocBaseDatos) Then
-            AbrirBaseDatos = oDocBaseDatos
-            Exit Function
-        End If
-    End If
-    
-    MsgBox "No se encontró el archivo de base de datos en:" & Chr(10) & _
-           sRutaArchivo & Chr(10) & Chr(10) & _
-           "Seleccione el archivo manualmente.", 48, "Archivo no encontrado"
-    
-    Dim oFilePicker As Object
-    Dim sArchivoSeleccionado As String
-    
-    oFilePicker = CreateUnoService("com.sun.star.ui.dialogs.FilePicker")
-    oFilePicker.appendFilter("Archivos de LibreOffice Calc (*.ods)", "*.ods")
-    oFilePicker.appendFilter("Todos los archivos (*.*)", "*.*")
-    oFilePicker.setCurrentFilter("Archivos de LibreOffice Calc (*.ods)")
-    
-    On Error Resume Next
-    oFilePicker.setDisplayDirectory(ConvertToURL("/home/cristian/Documentos/"))
-    On Error Goto 0
-    
-    If oFilePicker.execute() = 1 Then
-        sArchivoSeleccionado = oFilePicker.getFiles()(0)
-        
-        On Error Resume Next
-        oDocBaseDatos = StarDesktop.loadComponentFromURL(sArchivoSeleccionado, "_blank", 0, Array())
-        On Error Goto 0
-        
-        If Not IsNull(oDocBaseDatos) Then
-            AbrirBaseDatos = oDocBaseDatos
-            Exit Function
-        End If
-    End If
-    
-    AbrirBaseDatos = Null
-End Function
+'══════════════════════════════════════════════════════════════════════════
+' RESOLVER UNA MESA  →  Array(presidente, vocal1, vocal2, estado)
+'══════════════════════════════════════════════════════════════════════════
+Function ResolverMesa(sCod As String, sMat As String, aRepO(), aRepN(), aRepTok()) As Variant
+    Dim nF As Long, nElegida As Long
+    Dim dMejor As Double
+    Dim aP() As Double
+    Dim sCodN As String, sCodNum As String, sMatN As String
+    Dim sPresRef As String
+    Dim bAmbiguo As Boolean
+    Dim vSalida As Variant
 
-' Función para convertir ruta a URL
-Function ConvertToURL(sRuta As String) As String
-    Dim oPathSettings As Object
-    
-    If Left(sRuta, 7) = "file://" Then
-        ConvertToURL = sRuta
+    sCodN   = NormalizarTexto(sCod)
+    sCodNum = SoloDigitos(sCod)
+    sMatN   = NormalizarTexto(sMat)
+
+    '--- Puntuar todas las filas de la BD --------------------------------
+    ReDim aP(gN - 1)
+    dMejor   = -1
+    nElegida = -1
+    For nF = 0 To gN - 1
+        aP(nF) = PuntajeFila(nF, sCodN, sCodNum, sMatN, aRepN, aRepTok)
+        If aP(nF) > dMejor Then
+            dMejor   = aP(nF)
+            nElegida = nF
+        End If
+    Next nF
+
+    '--- Ninguna fila sirve ----------------------------------------------
+    If nElegida < 0 Or dMejor < PUNTAJE_MIN Then
+        vSalida = Array("", "", "", _
+            "REVISAR: no se encontró la materia en la BD (" & Trim(sCod & " " & sMat) & ")")
+        If UBound(aRepO) >= 0 Then vSalida(0) = aRepO(0)
+        If UBound(aRepO) >= 1 Then vSalida(1) = aRepO(1)
+        If UBound(aRepO) >= 2 Then vSalida(2) = aRepO(2)
+        ResolverMesa = vSalida
         Exit Function
     End If
-    
-    oPathSettings = CreateUnoService("com.sun.star.util.PathSubstitution")
-    ConvertToURL = oPathSettings.substituteVariables("file://" & sRuta, True)
-End Function
 
-' Función para normalizar nombres de docentes (quitar espacios extra, comas, mayúsculas)
-Function NormalizarNombre(sNombre As String) As String
-    Dim sResultado As String
-    
-    ' Convertir a mayúsculas
-    sResultado = UCase(Trim(sNombre))
-    
-    ' Quitar comas
-    sResultado = Replace(sResultado, ",", "")
-    
-    ' Quitar espacios múltiples
-    Do While InStr(sResultado, "  ") > 0
-        sResultado = Replace(sResultado, "  ", " ")
-    Loop
-    
-    NormalizarNombre = Trim(sResultado)
-End Function
-
-' Función para asignar roles a los docentes según la base de datos
-Sub AsignarRolesDocentes(oDocBD As Object, sCodigoMateria As String, aDocentesReporte() As Variant, _
-                         sPresidente As String, sVocal1 As String, sVocal2 As String)
-    Dim oSheetBD As Object
-    Dim nFila As Long
-    Dim sCodigoBD As String
-    Dim bEncontrado As Boolean
-    
-    ' Inicializar
-    sPresidente = ""
-    sVocal1 = ""
-    sVocal2 = ""
-    bEncontrado = False
-    
-    oSheetBD = oDocBD.Sheets.getByIndex(0)
-    
-    ' Limpiar código de materia (solo espacios, NO guiones todavía)
-    sCodigoMateria = Trim(sCodigoMateria)
-    
-    ' Buscar la fila de esta materia en la base de datos
-    Dim sCodigoBuscar As String
-    Dim nIntentos As Integer
-    
-    For nIntentos = 1 To 2
-        ' Primer intento: buscar el código completo (con sub-código si existe)
-        ' Segundo intento: buscar solo el código base (sin sub-código)
-        If nIntentos = 1 Then
-            sCodigoBuscar = sCodigoMateria
-        Else
-            ' Extraer código base (parte antes del guión)
-            Dim nPosGuion As Integer
-            nPosGuion = InStr(sCodigoMateria, "-")
-            If nPosGuion > 0 Then
-                sCodigoBuscar = Left(sCodigoMateria, nPosGuion - 1)
-            Else
-                ' No tiene guión, no hay segundo intento posible
-                Exit For
+    '--- ¿Empate con presidentes distintos? ------------------------------
+    bAmbiguo = False
+    sPresRef = gDocN(nElegida, 0)
+    For nF = 0 To gN - 1
+        If nF <> nElegida Then
+            If aP(nF) >= dMejor - 0.01 Then
+                If gDocN(nF, 0) <> sPresRef Then bAmbiguo = True
             End If
         End If
-        
-        ' Buscar en la base de datos
-        For nFila = 5 To 229
-            sCodigoBD = Trim(oSheetBD.getCellByPosition(0, nFila).getString())
-            
-            ' Comparar códigos (sin distinguir mayúsculas)
-            If UCase(sCodigoBD) = UCase(sCodigoBuscar) Then
-                ' Encontramos la materia, leer los docentes de la BD
-                Dim sPresidenteBD As String
-                Dim sVocal1BD As String
-                Dim sVocal2BD As String
-                
-                sPresidenteBD = Trim(oSheetBD.getCellByPosition(4, nFila).getString()) ' Columna E
-                sVocal1BD = Trim(oSheetBD.getCellByPosition(5, nFila).getString())     ' Columna F
-                sVocal2BD = Trim(oSheetBD.getCellByPosition(6, nFila).getString())     ' Columna G
-                
-                ' Normalizar nombres de la BD
-                Dim sPresidenteNorm As String
-                Dim sVocal1Norm As String
-                Dim sVocal2Norm As String
-                
-                sPresidenteNorm = NormalizarNombre(sPresidenteBD)
-                sVocal1Norm = NormalizarNombre(sVocal1BD)
-                sVocal2Norm = NormalizarNombre(sVocal2BD)
-                
-                ' Ahora comparar cada docente del reporte con los de la BD
-                Dim i As Integer
-                For i = LBound(aDocentesReporte) To UBound(aDocentesReporte)
-                    Dim sDocenteReporteNorm As String
-                    sDocenteReporteNorm = NormalizarNombre(aDocentesReporte(i))
-                    
-                    ' Comparar con presidente
-                    If sDocenteReporteNorm = sPresidenteNorm Then
-                        sPresidente = aDocentesReporte(i) ' Usar el nombre original del reporte
-                    ' Comparar con vocal 1
-                    ElseIf sDocenteReporteNorm = sVocal1Norm Then
-                        sVocal1 = aDocentesReporte(i)
-                    ' Comparar con vocal 2
-                    ElseIf sDocenteReporteNorm = sVocal2Norm Then
-                        sVocal2 = aDocentesReporte(i)
+    Next nF
+
+    vSalida = AsignarRoles(aRepO, aRepN, nElegida)
+
+    If bAmbiguo Then
+        If vSalida(3) = "OK" Then
+            vSalida(3) = "REVISAR: varias filas de la BD encajan igual y con presidentes distintos"
+        Else
+            vSalida(3) = vSalida(3) & " | Además hay filas empatadas con presidentes distintos"
+        End If
+    End If
+
+    ResolverMesa = vSalida
+End Function
+
+
+'══════════════════════════════════════════════════════════════════════════
+' PUNTAJE de una fila de la BD frente a la mesa del reporte
+'══════════════════════════════════════════════════════════════════════════
+Function PuntajeFila(nF As Long, sCodN As String, sCodNum As String, _
+                     sMatN As String, aRepN(), aRepTok()) As Double
+    Dim p As Double, d As Double, dMax As Double
+    Dim i As Integer, j As Integer, k As Integer
+    Dim vTok As Variant
+    Dim bPosible As Boolean
+
+    p = 0
+
+    ' Código de materia
+    If Len(gCod(nF)) > 0 And Len(sCodN) > 0 Then
+        If gCod(nF) = sCodN Then
+            p = p + 100
+        ElseIf Len(gCodNum(nF)) > 0 And gCodNum(nF) = sCodNum Then
+            p = p + 70
+        End If
+    End If
+
+    ' Nombre de materia
+    If Len(gMat(nF)) > 0 And Len(sMatN) > 0 Then
+        If gMat(nF) = sMatN Then
+            p = p + 55
+        ElseIf Similitud(gMat(nF), sMatN) >= 0.8 Then
+            p = p + 30
+        End If
+    End If
+
+    ' Tribunal: cada docente del reporte suma según su mejor coincidencia
+    For i = 0 To UBound(aRepN)
+        vTok = aRepTok(i)
+        dMax = 0
+        For j = 0 To 2
+            If Len(gDocN(nF, j)) > 0 Then
+                ' pre-filtro barato: alguna palabra larga en común
+                bPosible = False
+                If UBound(vTok) < 0 Then
+                    bPosible = True
+                Else
+                    For k = 0 To UBound(vTok)
+                        If InStr(gDocN(nF, j), vTok(k)) > 0 Then
+                            bPosible = True
+                            Exit For
+                        End If
+                    Next k
+                End If
+
+                If bPosible Then
+                    d = Similitud(aRepN(i), gDocN(nF, j))
+                    If d > dMax Then dMax = d
+                End If
+            End If
+        Next j
+        If dMax >= UMBRAL_DOC Then p = p + 20 * dMax
+    Next i
+
+    PuntajeFila = p
+End Function
+
+
+'══════════════════════════════════════════════════════════════════════════
+' ASIGNACIÓN GLOBAL DE ROLES
+' Toma siempre el par (docente del reporte, rol de la BD) de mayor
+' similitud, lo fija, y repite. Así ninguna coincidencia parcial se come
+' el lugar de una coincidencia mejor.
+'══════════════════════════════════════════════════════════════════════════
+Function AsignarRoles(aRepO(), aRepN(), nF As Long) As Variant
+    Dim nRep As Integer
+    Dim i As Integer, j As Integer
+    Dim mS() As Double
+    Dim aAsig(2) As Integer
+    Dim aUsado() As Boolean
+    Dim sOut(2) As String
+    Dim sEstado As String
+    Dim dMejor As Double
+    Dim iM As Integer, jM As Integer
+    Dim bColocado As Boolean
+
+    nRep = UBound(aRepO) + 1
+    ReDim mS(nRep - 1, 2)
+    ReDim aUsado(nRep - 1)
+
+    For i = 0 To nRep - 1
+        For j = 0 To 2
+            mS(i, j) = Similitud(aRepN(i), gDocN(nF, j))
+        Next j
+    Next i
+
+    For j = 0 To 2
+        aAsig(j) = -1
+        sOut(j)  = ""
+    Next j
+
+    Do
+        dMejor = UMBRAL_DOC
+        iM = -1
+        jM = -1
+        For i = 0 To nRep - 1
+            If Not aUsado(i) Then
+                For j = 0 To 2
+                    If aAsig(j) = -1 Then
+                        If mS(i, j) > dMejor Then
+                            dMejor = mS(i, j)
+                            iM = i
+                            jM = j
+                        End If
                     End If
-                Next i
-                
-                bEncontrado = True
-                Exit For
+                Next j
+            End If
+        Next i
+        If iM = -1 Then Exit Do
+        aAsig(jM)  = iM
+        aUsado(iM) = True
+    Loop
+
+    For j = 0 To 2
+        If aAsig(j) >= 0 Then
+            If USAR_NOMBRE_BD Then
+                sOut(j) = gDocO(nF, j)
+            Else
+                sOut(j) = aRepO(aAsig(j))
+            End If
+        End If
+    Next j
+
+    sEstado = ""
+
+    ' Docentes del reporte que no coinciden con nadie de la BD
+    For i = 0 To nRep - 1
+        If Not aUsado(i) Then
+            bColocado = False
+            For j = 0 To 2
+                If aAsig(j) = -1 And Not bColocado Then
+                    sOut(j)   = aRepO(i)
+                    aAsig(j)  = -2
+                    bColocado = True
+                    sEstado = sEstado & "DISTINTO en " & NombreRol(j) & _
+                              ": reporte=[" & aRepO(i) & "] / BD=[" & gDocO(nF, j) & "]. "
+                End If
+            Next j
+            If Not bColocado Then
+                sEstado = sEstado & "SOBRA en el reporte: [" & aRepO(i) & "]. "
+            End If
+        End If
+    Next i
+
+    ' Roles de la BD que quedaron sin nadie
+    For j = 0 To 2
+        If Len(sOut(j)) = 0 And Len(gDocO(nF, j)) > 0 Then
+            sEstado = sEstado & "FALTA " & NombreRol(j) & " (BD: [" & gDocO(nF, j) & "]). "
+        End If
+    Next j
+
+    If Len(sEstado) = 0 Then
+        sEstado = "OK"
+    Else
+        sEstado = "REVISAR: " & Trim(sEstado)
+    End If
+
+    AsignarRoles = Array(sOut(0), sOut(1), sOut(2), sEstado)
+End Function
+
+
+Function NombreRol(j As Integer) As String
+    Select Case j
+        Case 0    : NombreRol = "Presidente"
+        Case 1    : NombreRol = "Vocal 1"
+        Case Else : NombreRol = "Vocal 2"
+    End Select
+End Function
+
+
+'══════════════════════════════════════════════════════════════════════════
+' SIMILITUD ENTRE DOS NOMBRES YA NORMALIZADOS
+' Cuenta palabras compartidas sobre el nombre más corto, así tolera
+' segundos nombres que aparecen en un lado y no en el otro.
+'══════════════════════════════════════════════════════════════════════════
+Function Similitud(sA As String, sB As String) As Double
+    Dim aA As Variant, aB As Variant
+    Dim bUsado() As Boolean
+    Dim i As Integer, j As Integer
+    Dim nCom As Integer, nMin As Integer
+
+    If Len(sA) = 0 Or Len(sB) = 0 Then
+        Similitud = 0
+        Exit Function
+    End If
+    If sA = sB Then
+        Similitud = 1
+        Exit Function
+    End If
+
+    aA = Split(sA, " ")
+    aB = Split(sB, " ")
+    ReDim bUsado(UBound(aB))
+    nCom = 0
+
+    For i = 0 To UBound(aA)
+        If Len(aA(i)) > 1 Then
+            For j = 0 To UBound(aB)
+                If Not bUsado(j) Then
+                    If aA(i) = aB(j) Then
+                        bUsado(j) = True
+                        nCom = nCom + 1
+                        Exit For
+                    End If
+                End If
+            Next j
+        End If
+    Next i
+
+    nMin = UBound(aA) + 1
+    If UBound(aB) + 1 < nMin Then nMin = UBound(aB) + 1
+    If nMin < 1 Then nMin = 1
+
+    ' Con una sola palabra en común el puntaje queda muy bajo a propósito:
+    ' evita confundir dos docentes que comparten apellido.
+    If nCom < 2 Then
+        Similitud = nCom / (nMin * 3)
+    Else
+        Similitud = nCom / nMin
+    End If
+End Function
+
+
+'══════════════════════════════════════════════════════════════════════════
+' NORMALIZACIÓN
+'══════════════════════════════════════════════════════════════════════════
+Function NormalizarTexto(sTexto As String) As String
+    Dim s As String, r As String, c As String
+    Dim i As Integer, p As Integer
+    Dim sOrig As String, sDest As String
+
+    sOrig = "ÁÀÄÂÃÉÈËÊÍÌÏÎÓÒÖÔÕÚÙÜÛÑÇáàäâãéèëêíìïîóòöôõúùüûñç"
+    sDest = "AAAAAEEEEIIIIOOOOOUUUUNCAAAAAEEEEIIIIOOOOOUUUUNC"
+
+    s = Trim(sTexto)
+    r = ""
+    For i = 1 To Len(s)
+        c = Mid(s, i, 1)
+        p = InStr(sOrig, c)
+        If p > 0 Then c = Mid(sDest, p, 1)
+        r = r & c
+    Next i
+
+    r = UCase(r)
+    r = Replace(r, ",",     " ")
+    r = Replace(r, ".",     " ")
+    r = Replace(r, ";",     " ")
+    r = Replace(r, ":",     " ")
+    r = Replace(r, "-",     " ")
+    r = Replace(r, "_",     " ")
+    r = Replace(r, "/",     " ")
+    r = Replace(r, Chr(9),  " ")
+    r = Replace(r, Chr(160)," ")
+    Do While InStr(r, "  ") > 0
+        r = Replace(r, "  ", " ")
+    Loop
+
+    NormalizarTexto = Trim(r)
+End Function
+
+
+Function NormalizarLista(aOrig()) As Variant
+    Dim aOut() As String
+    Dim i As Integer
+    If UBound(aOrig) < 0 Then
+        NormalizarLista = Array()
+        Exit Function
+    End If
+    ReDim aOut(UBound(aOrig))
+    For i = 0 To UBound(aOrig)
+        aOut(i) = AplicarEquivalencia(NormalizarTexto(aOrig(i)))
+    Next i
+    NormalizarLista = aOut
+End Function
+
+
+' Devuelve, por cada nombre, sus palabras de 4 o más letras (para pre-filtrar)
+Function TokenizarLista(aNorm()) As Variant
+    Dim aOut() As Variant
+    Dim i As Integer
+    If UBound(aNorm) < 0 Then
+        TokenizarLista = Array()
+        Exit Function
+    End If
+    ReDim aOut(UBound(aNorm))
+    For i = 0 To UBound(aNorm)
+        aOut(i) = TokensLargos(aNorm(i))
+    Next i
+    TokenizarLista = aOut
+End Function
+
+
+Function TokensLargos(sNorm As String) As Variant
+    Dim aT As Variant
+    Dim aOut() As String
+    Dim i As Integer, n As Integer
+    aT = Split(sNorm, " ")
+    ReDim aOut(UBound(aT))
+    n = 0
+    For i = 0 To UBound(aT)
+        If Len(aT(i)) >= 4 Then
+            aOut(n) = aT(i)
+            n = n + 1
+        End If
+    Next i
+    If n = 0 Then
+        TokensLargos = Array()
+    Else
+        ReDim Preserve aOut(n - 1)
+        TokensLargos = aOut
+    End If
+End Function
+
+
+Function SoloDigitos(sTexto As String) As String
+    Dim i As Integer, c As String, r As String
+    r = ""
+    For i = 1 To Len(sTexto)
+        c = Mid(sTexto, i, 1)
+        If c >= "0" And c <= "9" Then r = r & c
+    Next i
+    SoloDigitos = r
+End Function
+
+
+Function AplicarEquivalencia(sNorm As String) As String
+    Dim i As Long
+    AplicarEquivalencia = sNorm
+    For i = 0 To gEqN - 1
+        If gEqDe(i) = sNorm Then
+            AplicarEquivalencia = gEqA(i)
+            Exit Function
+        End If
+    Next i
+End Function
+
+
+'══════════════════════════════════════════════════════════════════════════
+' LECTURA DEL REPORTE
+'══════════════════════════════════════════════════════════════════════════
+Function SepararDocentes(sTexto As String) As Variant
+    Dim aTmp As Variant
+    Dim aOut() As String
+    Dim i As Integer, n As Integer
+    Dim s As String
+
+    sTexto = Trim(sTexto)
+    If Len(sTexto) = 0 Then
+        SepararDocentes = Array()
+        Exit Function
+    End If
+
+    aTmp = Split(sTexto, ",")
+    ReDim aOut(UBound(aTmp))
+    n = 0
+    For i = 0 To UBound(aTmp)
+        s = Trim(aTmp(i))
+        Do While InStr(s, "  ") > 0
+            s = Replace(s, "  ", " ")
+        Loop
+        If Len(s) > 1 Then
+            aOut(n) = s
+            n = n + 1
+        End If
+    Next i
+
+    If n = 0 Then
+        SepararDocentes = Array()
+    Else
+        ReDim Preserve aOut(n - 1)
+        SepararDocentes = aOut
+    End If
+End Function
+
+
+Function ExtraerCodigoMateria(sTexto As String) As String
+    Dim n As Integer
+    sTexto = Trim(sTexto)
+    If Left(sTexto, 1) = "(" Then
+        n = InStr(sTexto, ")")
+        If n > 0 Then
+            ExtraerCodigoMateria = Trim(Mid(sTexto, 2, n - 2))
+        Else
+            ExtraerCodigoMateria = Trim(Mid(sTexto, 2))
+        End If
+    Else
+        ExtraerCodigoMateria = ""
+    End If
+End Function
+
+
+Function ExtraerNombreMateria(sTexto As String) As String
+    Dim n As Integer
+    sTexto = Trim(sTexto)
+    If Left(sTexto, 1) = "(" Then
+        n = InStr(sTexto, ")")
+        If n > 0 Then
+            ExtraerNombreMateria = Trim(Mid(sTexto, n + 1))
+            Exit Function
+        End If
+    End If
+    ExtraerNombreMateria = sTexto
+End Function
+
+
+Function LeerFilaTexto(oSheet As Object, nFila As Long, nCol1 As Integer, nCol2 As Integer) As String
+    Dim j As Integer, s As String
+    s = ""
+    For j = nCol1 To nCol2
+        s = s & " " & Trim(oSheet.getCellByPosition(j, nFila).getString())
+    Next j
+    LeerFilaTexto = Trim(s)
+End Function
+
+
+Function UltimaFila(oSheet As Object) As Long
+    Dim oCur As Object
+    oCur = oSheet.createCursor()
+    oCur.gotoEndOfUsedArea(False)
+    UltimaFila = oCur.RangeAddress.EndRow
+End Function
+
+
+'══════════════════════════════════════════════════════════════════════════
+' CARGA DE LA BASE DE DATOS
+'══════════════════════════════════════════════════════════════════════════
+Sub CargarBaseDatos(oBD As Object)
+    Dim oS As Object, oD As Object
+    Dim nUlt As Long, nFila As Long, n As Long
+    Dim sCod As String, sMat As String
+    Dim sP As String, sV1 As String, sV2 As String
+    Dim sDrive As String, sRep As String, sCorr As String
+
+    oS   = oBD.Sheets.getByIndex(0)
+    nUlt = UltimaFila(oS)
+
+    ReDim gCod(nUlt)
+    ReDim gCodNum(nUlt)
+    ReDim gMat(nUlt)
+    ReDim gDocO(nUlt, 2)
+    ReDim gDocN(nUlt, 2)
+
+    n = 0
+    For nFila = BD_FILA_1 To nUlt
+        sCod = Trim(oS.getCellByPosition(BD_COL_COD,  nFila).getString())
+        sMat = Trim(oS.getCellByPosition(BD_COL_MAT,  nFila).getString())
+        sP   = Trim(oS.getCellByPosition(BD_COL_PRES, nFila).getString())
+        sV1  = Trim(oS.getCellByPosition(BD_COL_VOC1, nFila).getString())
+        sV2  = Trim(oS.getCellByPosition(BD_COL_VOC2, nFila).getString())
+
+        If Len(sMat) > 0 Or Len(sP) > 0 Then
+            gCod(n)     = NormalizarTexto(sCod)
+            gCodNum(n)  = SoloDigitos(sCod)
+            gMat(n)     = NormalizarTexto(sMat)
+            gDocO(n, 0) = sP
+            gDocO(n, 1) = sV1
+            gDocO(n, 2) = sV2
+            gDocN(n, 0) = NormalizarTexto(sP)
+            gDocN(n, 1) = NormalizarTexto(sV1)
+            gDocN(n, 2) = NormalizarTexto(sV2)
+            n = n + 1
+        End If
+    Next nFila
+    gN = n
+
+    '--- Equivalencias opcionales:  hoja DOCENTES  A=Drive  B=Reporte  C=Correcto
+    gEqN = 0
+    ReDim gEqDe(1)
+    ReDim gEqA(1)
+
+    If oBD.Sheets.hasByName("DOCENTES") Then
+        oD   = oBD.Sheets.getByName("DOCENTES")
+        nUlt = UltimaFila(oD)
+        ReDim gEqDe(nUlt * 2 + 2)
+        ReDim gEqA(nUlt * 2 + 2)
+        For nFila = 1 To nUlt
+            sDrive = NormalizarTexto(oD.getCellByPosition(0, nFila).getString())
+            sRep   = NormalizarTexto(oD.getCellByPosition(1, nFila).getString())
+            sCorr  = NormalizarTexto(oD.getCellByPosition(2, nFila).getString())
+            If Len(sDrive) > 0 Then
+                If Len(sRep) > 0 And sRep <> sDrive Then
+                    gEqDe(gEqN) = sRep
+                    gEqA(gEqN)  = sDrive
+                    gEqN = gEqN + 1
+                End If
+                If Len(sCorr) > 0 And sCorr <> sDrive Then
+                    gEqDe(gEqN) = sCorr
+                    gEqA(gEqN)  = sDrive
+                    gEqN = gEqN + 1
+                End If
             End If
         Next nFila
-        
-        ' Si se encontró, salir del bucle de intentos
-        If bEncontrado Then
-            Exit For
-        End If
-    Next nIntentos
-    
-    ' Si no se encontró la materia
-    If Not bEncontrado Then
-        sPresidente = "[Materia no encontrada en BD]"
-        If UBound(aDocentesReporte) >= 0 Then sVocal1 = aDocentesReporte(0)
-        If UBound(aDocentesReporte) >= 1 Then sVocal2 = aDocentesReporte(1)
     End If
 End Sub
+
+
+'══════════════════════════════════════════════════════════════════════════
+' APERTURA DEL ARCHIVO DE BASE DE DATOS
+'══════════════════════════════════════════════════════════════════════════
+Function AbrirBaseDatos(sRuta As String) As Object
+    Dim oDocBD As Object, oFA As Object, oFP As Object
+    Dim bExiste As Boolean
+    Dim sSel As String
+
+    oFA = CreateUnoService("com.sun.star.ucb.SimpleFileAccess")
+
+    On Error Resume Next
+    bExiste = oFA.exists(ConvertToURL(sRuta))
+    On Error Goto 0
+
+    If bExiste Then
+        On Error Resume Next
+        oDocBD = StarDesktop.loadComponentFromURL(ConvertToURL(sRuta), "_blank", 0, Array())
+        On Error Goto 0
+        If Not IsNull(oDocBD) Then
+            AbrirBaseDatos = oDocBD
+            Exit Function
+        End If
+    End If
+
+    MsgBox "No se encontró la base de datos en:" & Chr(10) & sRuta & Chr(10) & Chr(10) & _
+           "Seleccionala manualmente.", 48, "Archivo no encontrado"
+
+    oFP = CreateUnoService("com.sun.star.ui.dialogs.FilePicker")
+    oFP.appendFilter("Hojas de cálculo (*.ods;*.xlsx)", "*.ods;*.xlsx")
+    oFP.appendFilter("Todos los archivos (*.*)", "*.*")
+    oFP.setCurrentFilter("Hojas de cálculo (*.ods;*.xlsx)")
+
+    On Error Resume Next
+    oFP.setDisplayDirectory(ConvertToURL("/home/cristian/Documentos/"))
+    On Error Goto 0
+
+    If oFP.execute() = 1 Then
+        sSel = oFP.getFiles()(0)
+        On Error Resume Next
+        oDocBD = StarDesktop.loadComponentFromURL(sSel, "_blank", 0, Array())
+        On Error Goto 0
+        If Not IsNull(oDocBD) Then
+            AbrirBaseDatos = oDocBD
+            Exit Function
+        End If
+    End If
+
+    AbrirBaseDatos = Nothing
+End Function
