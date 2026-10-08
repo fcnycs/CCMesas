@@ -1,3 +1,8 @@
+/**
+ * Autor: Cristian Ariel Galego
+ * Desarrollado con asistencia de Claude (IA de Anthropic).
+ */
+
 function onOpen(e) {
   SpreadsheetApp.getUi().createMenu('Comparador')
     .addItem('Ejecutar Comparación', 'compararMesasRolPorRol')

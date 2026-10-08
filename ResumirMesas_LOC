@@ -1,6 +1,9 @@
 '══════════════════════════════════════════════════════════════════════════
 ' ResumirMesas_LOC  ·  v4
 '
+' Autor: Cristian Ariel Galego
+' Desarrollado con asistencia de Claude (IA de Anthropic).
+'
 ' Resume el reporte de mesas del SIU y separa el tribunal en
 ' Presidente / Vocal 1 / Vocal 2 tomando los roles de la base de datos
 ' local (copia de la planilla de Drive "Mesas de Examen").
